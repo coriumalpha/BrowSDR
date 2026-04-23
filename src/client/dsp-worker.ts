@@ -5,6 +5,7 @@ import { RationalResampler } from './worker/dsp-pipeline';
 let wasmInitPromise: Promise<void> | null = null;
 let _wasm: any;
 let ddc: any;
+let ismDdc: any;
 let vfoState: any;
 let sharedIqPtr = 0;
 let sharedSabViews: Int8Array[] | null = null;
@@ -20,6 +21,8 @@ const IF_RATES: Record<string, number> = {
     raw: 48000,
 };
 const AUDIO_RATE = 48000;
+const ISM_SCAN_IF_RATE = 1024000;
+const ISM_SCAN_BANDWIDTH_HZ = 1600000;
 
 interface ProcessOutput {
     audio: Float32Array | null;
@@ -55,6 +58,10 @@ self.onmessage = async (e: MessageEvent) => {
         // Initialize the DDC and VFO state
         if (ddc) {
             ddc.free();
+        }
+        if (ismDdc) {
+            ismDdc.free();
+            ismDdc = null;
         }
         ddc = new DspProcessor(msg.sampleRate, 0.0, msg.params.bandwidth || 150000);
 
@@ -137,7 +144,7 @@ self.onmessage = async (e: MessageEvent) => {
 
 function configureDDC(params: any, systemCenterFreq: number): void {
     const sniffWide = params.mode === 'nfm' && !!params.ism;
-    const ifRate = sniffWide ? IF_RATES.wfm : IF_RATES[params.mode];
+    const ifRate = IF_RATES[params.mode];
     if (ifRate === undefined) {
         console.error(`[DSP Worker] Unknown mode "${params.mode}" — no IF rate defined. Skipping DDC config.`);
         return;
@@ -149,13 +156,7 @@ function configureDDC(params: any, systemCenterFreq: number): void {
     }
 
     const offsetFreq = (params.freq - systemCenterFreq) * 1e6;
-    // ISM/OOK remotes are often frequency-shifted (cheap SAW oscillators).
-    // Keep the user VFO UI as-is, but widen the RF channel filter for decode
-    // so we still catch typical +/- tens of kHz offsets around 433.92 MHz.
-    const effectiveBandwidth =
-        sniffWide
-            ? Math.max(params.bandwidth || 12500, 280000)
-            : (params.bandwidth || 150000);
+    const effectiveBandwidth = params.bandwidth || 150000;
     ddc.set_shift(systemSampleRate, offsetFreq);
     ddc.set_bandwidth(effectiveBandwidth);
     ddc.set_squelch(params.squelchLevel, params.squelchEnabled);
@@ -167,6 +168,62 @@ function configureDDC(params: any, systemCenterFreq: number): void {
 
     // Apply UI audio filters (High Pass 300Hz, Low Pass BW/2)
     ddc.set_audio_filters(params.lowPass || false, params.highPass || false);
+
+    if (sniffWide) {
+        if (!ismDdc) {
+            ismDdc = new DspProcessor(systemSampleRate, 0.0, ISM_SCAN_BANDWIDTH_HZ);
+        }
+        const ismIfRate = Math.min(systemSampleRate, ISM_SCAN_IF_RATE);
+        const ismBandwidth = Math.min(ISM_SCAN_BANDWIDTH_HZ, Math.max(300000, Math.floor(systemSampleRate * 0.88)));
+        ismDdc.set_if_sample_rate(ismIfRate);
+        ismDdc.set_shift(systemSampleRate, 0);
+        ismDdc.set_bandwidth(ismBandwidth);
+        ismDdc.set_squelch(-140, false);
+        ismDdc.set_wfm_mode(false);
+        ismDdc.set_audio_filters(false, false);
+    } else if (ismDdc) {
+        ismDdc.free();
+        ismDdc = null;
+    }
+}
+
+function processIsmWideEnvelope(chunkLenBytes: number): { ism: Float32Array | null; ismSampleRate: number } {
+    if (!ismDdc) return { ism: null, ismSampleRate: AUDIO_RATE };
+
+    const outPtr = ismDdc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);
+    const numOutValues = ismDdc.get_iq_output_len();
+    const numIqSamples = numOutValues / 2;
+    if (numIqSamples === 0) return { ism: null, ismSampleRate: AUDIO_RATE };
+
+    const iq = new Float32Array(_wasm.memory.buffer, outPtr, numOutValues);
+    const ifRate = Math.min(systemSampleRate, ISM_SCAN_IF_RATE);
+    const env = new Float32Array(numIqSamples);
+
+    const dcAlpha = Math.exp(-1.0 / Math.max(1, ifRate * 0.020));
+    const dcBeta = 1.0 - dcAlpha;
+    const agcAttack = Math.min(0.12, 320.0 / ifRate);
+    const agcDecay = Math.min(0.012, 18.0 / ifRate);
+
+    let dc = vfoState.dcAvg || 0;
+    let agc = Math.max(vfoState.agcGain || 0.02, 1e-6);
+
+    for (let i = 0; i < numIqSamples; i++) {
+        const dI = iq[i * 2];
+        const dQ = iq[i * 2 + 1];
+        const mag = Math.sqrt(dI * dI + dQ * dQ);
+        dc = dcAlpha * dc + dcBeta * mag;
+        let e = mag - dc;
+        if (e < 0) e = 0;
+        if (e > agc) agc += (e - agc) * agcAttack;
+        else agc += (e - agc) * agcDecay;
+        let n = e / (agc * 2.0 + 1e-9);
+        if (n > 1.0) n = 1.0;
+        env[i] = n;
+    }
+
+    vfoState.dcAvg = dc;
+    vfoState.agcGain = agc;
+    return { ism: env, ismSampleRate: ifRate };
 }
 
 function processVfoAudio(chunkLenBytes: number, params: any): ProcessOutput {
@@ -175,73 +232,6 @@ function processVfoAudio(chunkLenBytes: number, params: any): ProcessOutput {
     const empty: ProcessOutput = { audio: null, ism: null, ismSampleRate: AUDIO_RATE };
 
     if (mode === 'nfm' || mode === 'wfm') {
-        const useIsmEnvelope = mode === 'nfm' && !!params.ism;
-        if (useIsmEnvelope) {
-            // For OOK/ASK decoding we use IQ magnitude envelope (rtl_433-style path)
-            // instead of FM-demod audio. This yields clearer pulse/gap boundaries.
-            const outPtr = ddc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);
-            const numOutValues = ddc.get_iq_output_len();
-            const numIqSamples = numOutValues / 2;
-            if (numIqSamples === 0) return empty;
-
-            const iq = new Float32Array(_wasm.memory.buffer, outPtr, numOutValues);
-            if (numIqSamples > vfoState.scratchBuf.length) {
-                vfoState.scratchBuf = new Float32Array(numIqSamples + 128);
-            }
-            const env = vfoState.scratchBuf.subarray(0, numIqSamples);
-
-            const ifRate = vfoState.currentIfRate || IF_RATES.wfm;
-            const dcAlpha = Math.exp(-1.0 / Math.max(1, ifRate * 0.015)); // ~15 ms DC tracker
-            const dcBeta = 1.0 - dcAlpha;
-            const agcAttack = Math.min(0.15, 400.0 / ifRate);
-            const agcDecay = Math.min(0.02, 25.0 / ifRate);
-
-            let dc = vfoState.dcAvg || 0;
-            let agc = Math.max(vfoState.agcGain || 0.02, 1e-6);
-            let envSum = 0;
-
-            for (let i = 0; i < numIqSamples; i++) {
-                const dI = iq[i * 2];
-                const dQ = iq[i * 2 + 1];
-                const mag = Math.sqrt(dI * dI + dQ * dQ);
-
-                dc = dcAlpha * dc + dcBeta * mag;
-                let e = mag - dc;
-                if (e < 0) e = 0;
-                envSum += e;
-
-                if (e > agc) agc += (e - agc) * agcAttack;
-                else agc += (e - agc) * agcDecay;
-
-                let n = e / (agc * 2.2 + 1e-9);
-                if (n > 1.0) n = 1.0;
-                env[i] = n;
-            }
-
-            vfoState.dcAvg = dc;
-            vfoState.agcGain = agc;
-
-            const envAvg = envSum / numIqSamples;
-            vfoState.squelchDb = 20 * Math.log10(envAvg + 1e-9);
-            vfoState.squelchOpen = envAvg > 0.002;
-
-            const result = vfoState.audioResampler ? vfoState.audioResampler.process(env) : env;
-            if (result.length === 0) {
-                return { audio: null, ism: env.subarray(0, numIqSamples), ismSampleRate: ifRate };
-            }
-
-            if (result.length > vfoState.audioTarget.length) {
-                vfoState.audioTarget = new Float32Array(result.length + 1024);
-            }
-            const outView = vfoState.audioTarget.subarray(0, result.length);
-            outView.set(result);
-            return {
-                audio: outView,
-                ism: env.subarray(0, numIqSamples),
-                ismSampleRate: ifRate,
-            };
-        }
-
         let outPtr: number;
         try {
             outPtr = ddc.process_ptr(sharedIqPtr, chunkLenBytes);
@@ -291,7 +281,8 @@ function processVfoAudio(chunkLenBytes: number, params: any): ProcessOutput {
         }
         const outView = vfoState.audioTarget.subarray(0, numAudioSamples);
         outView.set(result);
-        return { audio: outView, ism: null, ismSampleRate: AUDIO_RATE };
+        const ism = mode === 'nfm' && !!params.ism ? processIsmWideEnvelope(chunkLenBytes) : { ism: null, ismSampleRate: AUDIO_RATE };
+        return { audio: outView, ism: ism.ism, ismSampleRate: ism.ismSampleRate };
     } else {
         // Non-FM Path
         const outPtr = ddc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);

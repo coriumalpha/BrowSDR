@@ -24,7 +24,7 @@ import { RationalResampler } from './dsp-pipeline';
 import { POCSAGDecoder } from './pocsag';
 import { ISMDecoder } from './ism';
 import type { RxStreamOpts, VfoParams, VfoState, PerfCounters } from './types';
-import { IF_RATES, AUDIO_RATE } from './types';
+import { IF_RATES, AUDIO_RATE, ISM_SCAN_IF_RATE, ISM_SCAN_BANDWIDTH_HZ } from './types';
 import type { Backend } from './backend';
 
 let _streamStarting = false;
@@ -535,7 +535,7 @@ export async function startRxStream(
 				ismCallback(v, params.freq, {
 					type: 'status',
 					protocol: 'ISM-SNIFFER',
-					text: `ISM sniffer armed bw=${params.bandwidth}Hz wideIF=${wideIf}`,
+					text: `ISM sniffer armed bw=${ISM_SCAN_BANDWIDTH_HZ}Hz if=${ISM_SCAN_IF_RATE}Hz wideIF=${wideIf}`,
 					confidence: 1,
 				});
 				state.ismArmedStatusSent = true;

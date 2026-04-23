@@ -88,9 +88,9 @@ export class ISMDecoder {
 	constructor(private onMessage: (msg: ISMMessage) => void, sampleRate = 48000) {
 		const sr = Math.max(8000, sampleRate | 0);
 		this.sampleUs = 1_000_000 / sr;
-		this.minRunSamples = Math.max(2, Math.round(sr * 0.000024));
-		this.endGapSamples = Math.max(18, Math.round(sr * 0.0032));
-		this.maxBurstSamples = Math.max(this.endGapSamples * 2, Math.round(sr * 0.26));
+		this.minRunSamples = Math.max(2, Math.round(sr * 0.000016));
+		this.endGapSamples = Math.max(14, Math.round(sr * 0.0024));
+		this.maxBurstSamples = Math.max(this.endGapSamples * 2, Math.round(sr * 0.34));
 		this.endGapMs = (this.endGapSamples * this.sampleUs) / 1000;
 		this.maxBurstMs = (this.maxBurstSamples * this.sampleUs) / 1000;
 	}
@@ -145,8 +145,8 @@ export class ISMDecoder {
 	}
 
 	private _sliceBit(env: number): 0 | 1 {
-		const hi = Math.min(Math.max(this._noise * 2.45, 0.0028), 0.18);
-		const lo = Math.min(Math.max(this._noise * 1.55, 0.0018), 0.10);
+		const hi = Math.min(Math.max(this._noise * 2.05, 0.0018), 0.16);
+		const lo = Math.min(Math.max(this._noise * 1.30, 0.0010), 0.08);
 
 		if (this._bitState) {
 			if (env < lo) this._bitState = false;
