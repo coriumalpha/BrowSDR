@@ -1,4 +1,5 @@
 import type { ISMMessage } from './types';
+import { BitBuffer } from './rtl433-bitbuffer';
 
 interface RunUs {
 	level: 0 | 1;
@@ -503,6 +504,11 @@ export class ISMDecoder {
 
 		const fixedGap = this._decodeFixedGapPwm(runsUs, shortUs, longUs);
 		if (fixedGap) {
+			const waveman = this._decodeWaveman(fixedGap.row, fixedGap.repeats, parsed);
+			if (waveman) return waveman;
+			const visonic = this._decodeVisonicPowercode(fixedGap.row, fixedGap.repeats, parsed);
+			if (visonic) return visonic;
+
 			const row = fixedGap.row;
 			const rowHex = parseInt(row, 2).toString(16).toUpperCase().padStart(Math.ceil(row.length / 4), '0');
 			const model =
@@ -525,6 +531,9 @@ export class ISMDecoder {
 
 		const ppm = this._decodePpm(runsUs, shortUs, longUs);
 		if (ppm) {
+			const x10 = this._decodeX10Rf(ppm.row, ppm.repeats, parsed);
+			if (x10) return x10;
+
 			const rowHex = parseInt(ppm.row, 2).toString(16).toUpperCase().padStart(Math.ceil(ppm.row.length / 4), '0');
 			const confidence = this._protocolConfidence(parsed, ppm.repeats, ppm.shortGapUs, ppm.longGapUs, ppm.row.length, 0.84);
 			return {
@@ -617,6 +626,135 @@ export class ISMDecoder {
 		return null;
 	}
 
+	private _decodeWaveman(row: string, repeats: number, parsed: SymbolParse): DecodedProtocol | null {
+		if (row.length !== 25) return null;
+		if (/^0+$/.test(row) || /^1+$/.test(row)) return null;
+
+		for (let i = 0; i < 24; i += 2) {
+			if (row[i] !== '1') return null;
+		}
+
+		const nibs: number[] = [];
+		for (let i = 0; i < 24; i += 8) {
+			let nib = 0;
+			for (let j = 0; j < 8; j += 2) {
+				const pair = row.slice(i + j, i + j + 2);
+				nib <<= 1;
+				if (pair === '11') {
+					nib |= 0;
+				} else if (pair === '10') {
+					nib |= 1;
+				} else {
+					return null;
+				}
+			}
+			nibs.push(nib);
+		}
+
+		const id = String.fromCharCode(65 + nibs[0]);
+		const channel = (nibs[1] >> 2) + 1;
+		const button = (nibs[1] & 0x03) + 1;
+		const state = nibs[2] === 0x0e ? 'ON' : 'OFF';
+		return {
+			protocol: 'WAVEMAN',
+			model: 'Waveman-Switch',
+			id: `${id}${channel}${button}`,
+			raw: row,
+			text: `id=${id} channel=${channel} button=${button} state=${state} repeats=${repeats}`,
+			confidence: 0.92,
+			repeats,
+			pairs: parsed.totalPairs,
+			unknownRatio: parsed.unknown / Math.max(parsed.totalPairs, 1),
+		};
+	}
+
+	private _decodeVisonicPowercode(row: string, repeats: number, parsed: SymbolParse): DecodedProtocol | null {
+		if (row.length !== 37) return null;
+		const bits = BitBuffer.fromBitRows([row]);
+		const msg = bits.extractBytes(0, 1, 36);
+		if (!msg[0] && !msg[1] && !msg[2] && !msg[3] && !msg[4]) return null;
+		const lrc = msg[0] ^ msg[1] ^ msg[2] ^ msg[3] ^ msg[4];
+		if ((((lrc >> 4) ^ (lrc & 0x0f)) & 0x0f) !== 0) return null;
+
+		const id = [msg[0], msg[1], msg[2]].map((v) => v.toString(16).toUpperCase().padStart(2, '0')).join('');
+		const flags = msg[3];
+		return {
+			protocol: 'VISONIC-POWERCODE',
+			model: 'Visonic-Powercode',
+			id,
+			raw: row,
+			text: `id=${id} tamper=${(flags & 0x80) ? 1 : 0} alarm=${(flags & 0x40) ? 1 : 0} battery_ok=${(flags & 0x20) ? 0 : 1} restore=${(flags & 0x08) ? 1 : 0} repeats=${repeats}`,
+			confidence: 0.94,
+			repeats,
+			pairs: parsed.totalPairs,
+			unknownRatio: parsed.unknown / Math.max(parsed.totalPairs, 1),
+		};
+	}
+
+	private _decodeX10Rf(row: string, repeats: number, parsed: SymbolParse): DecodedProtocol | null {
+		if (row.length !== 32) return null;
+		const bits = BitBuffer.fromBitRows([row]);
+		const b = bits.extractBytes(0, 0, 32);
+		const knownMask = [0x0b, 0x0b, 0x07, 0x07];
+		const knownValue = [0x00, 0x0b, 0x00, 0x07];
+		if (((b[0] ^ b[1]) & 0xff) !== 0xff || ((b[2] ^ b[3]) & 0xff) !== 0xff) return null;
+		for (let i = 0; i < 4; i++) {
+			if ((b[i] & knownMask[i]) !== knownValue[i]) return null;
+		}
+
+		const houseBits = [
+			(b[0] & 0x80) >> 7,
+			(b[0] & 0x40) >> 6,
+			(b[0] & 0x20) >> 5,
+			(b[0] & 0x10) >> 4,
+		];
+		let houseCode = ((~(houseBits[0] ^ houseBits[1])) & 0x01) << 3;
+		houseCode |= ((~houseBits[1]) & 0x01) << 2;
+		houseCode |= ((houseBits[1] ^ houseBits[2]) & 0x01) << 1;
+		houseCode |= houseBits[3] & 0x01;
+
+		let deviceCode = (b[0] & 0x04) << 1;
+		deviceCode |= (b[2] & 0x40) >> 4;
+		deviceCode |= (b[2] & 0x08) >> 2;
+		deviceCode |= (b[2] & 0x10) >> 4;
+		deviceCode += 1;
+
+		const channel = String.fromCharCode(65 + houseCode);
+		let state = (b[2] & 0x20) === 0x00 ? 'ON' : 'OFF';
+		if ((b[2] & 0x80) === 0x80) {
+			deviceCode = 0;
+			switch (b[2]) {
+				case 0x98:
+					state = 'DIM';
+					break;
+				case 0x88:
+					state = 'BRI';
+					break;
+				case 0x90:
+					state = 'ALL LTS ON';
+					break;
+				case 0x80:
+					state = 'ALL OFF';
+					break;
+				default:
+					state = 'UNKNOWN';
+					break;
+			}
+		}
+
+		return {
+			protocol: 'X10-RF',
+			model: 'X10-RF',
+			id: `${channel}${deviceCode}`,
+			raw: row,
+			text: `channel=${channel} id=${deviceCode} state=${state} repeats=${repeats}`,
+			confidence: 0.93,
+			repeats,
+			pairs: parsed.totalPairs,
+			unknownRatio: parsed.unknown / Math.max(parsed.totalPairs, 1),
+		};
+	}
+
 	private _findRepeatedBinaryWindow(bits: string, width: number, minRepeats: number): { frame: string; repeats: number } | null {
 		if (bits.length < width * minRepeats) return null;
 		const counts = new Map<string, number>();
@@ -654,6 +792,21 @@ export class ISMDecoder {
 			}
 		}
 		return bestCount >= minRepeats && bestFrame ? { frame: bestFrame, repeats: bestCount } : null;
+	}
+
+	private _pickRepeatedRow(rows: string[], minRepeats: number, minBits: number, allowPrefix = false): { row: string; repeats: number; rows: number } | null {
+		const filtered = rows.filter((row) => row.length >= minBits);
+		if (!filtered.length) return null;
+		const bits = BitBuffer.fromBitRows(filtered);
+		const index = allowPrefix
+			? bits.findRepeatedPrefix(minRepeats, minBits)
+			: bits.findRepeatedRow(minRepeats, minBits);
+		if (index < 0) return null;
+		return {
+			row: bits.rowToBitString(index),
+			repeats: bits.countRepeats(index, allowPrefix ? minBits : 0),
+			rows: bits.numRows,
+		};
 	}
 
 	private _decodeFixedGapPwm(runsUs: RunUs[], fallbackShortUs: number, fallbackLongUs: number): FixedGapDecode | null {
@@ -704,29 +857,19 @@ export class ISMDecoder {
 		if (current.length >= 8) rows.push(current);
 		if (!rows.length) return null;
 
-		const counts = new Map<string, number>();
-		for (const row of rows) {
-			if (row.length < 8 || row.length > 32) continue;
-			counts.set(row, (counts.get(row) || 0) + 1);
-		}
-
-		let bestRow = '';
-		let bestCount = 0;
-		for (const [row, count] of counts.entries()) {
-			if (count > bestCount || (count === bestCount && row.length > bestRow.length)) {
-				bestRow = row;
-				bestCount = count;
-			}
-		}
-
-		if (!bestRow || bestCount < 2) return null;
+		const best = this._pickRepeatedRow(
+			rows.filter((row) => row.length >= 8 && row.length <= 32),
+			2,
+			8
+		);
+		if (!best) return null;
 		return {
-			row: bestRow,
-			repeats: bestCount,
+			row: best.row,
+			repeats: best.repeats,
 			gapUs,
 			shortUs: shortPulseUs,
 			longUs: longPulseUs,
-			rows: rows.length,
+			rows: best.rows,
 		};
 	}
 
@@ -780,29 +923,20 @@ export class ISMDecoder {
 		if (current.length >= 8) rows.push(current);
 		if (!rows.length) return null;
 
-		const counts = new Map<string, number>();
-		for (const row of rows) {
-			if (row.length < 8 || row.length > 48) continue;
-			counts.set(row, (counts.get(row) || 0) + 1);
-		}
-
-		let bestRow = '';
-		let bestCount = 0;
-		for (const [row, count] of counts.entries()) {
-			if (count > bestCount || (count === bestCount && row.length > bestRow.length)) {
-				bestRow = row;
-				bestCount = count;
-			}
-		}
-		if (!bestRow || bestCount < 2) return null;
+		const best = this._pickRepeatedRow(
+			rows.filter((row) => row.length >= 8 && row.length <= 48),
+			2,
+			8
+		);
+		if (!best) return null;
 
 		return {
-			row: bestRow,
-			repeats: bestCount,
+			row: best.row,
+			repeats: best.repeats,
 			pulseUs,
 			shortGapUs,
 			longGapUs,
-			rows: rows.length,
+			rows: best.rows,
 		};
 	}
 
@@ -838,57 +972,42 @@ export class ISMDecoder {
 		}
 		if (chips.length < 24) return null;
 
-		const decodePairs = (invert: boolean): string[] => {
-			const rows: string[] = [];
-			let current = '';
-			for (let i = 0; i + 1 < chips.length; i += 2) {
-				const a = chips[i];
-				const b = chips[i + 1];
-				if (a === 2 || b === 2) {
-					if (current.length >= 8) rows.push(current);
-					current = '';
-					continue;
-				}
-				if (a === b) {
-					if (current.length >= 8) rows.push(current);
-					current = '';
-					continue;
-				}
-				if (a === 1 && b === 0) current += invert ? '0' : '1';
-				else if (a === 0 && b === 1) current += invert ? '1' : '0';
+		const chipRows: string[] = [];
+		let currentChips = '';
+		for (const chip of chips) {
+			if (chip === 2) {
+				if (currentChips.length >= 16) chipRows.push(currentChips);
+				currentChips = '';
+				continue;
 			}
-			if (current.length >= 8) rows.push(current);
-			return rows;
+			currentChips += chip ? '1' : '0';
+		}
+		if (currentChips.length >= 16) chipRows.push(currentChips);
+		if (!chipRows.length) return null;
+
+		const decodeRows = (invert: boolean): { row: string; repeats: number; rows: number } | null => {
+			const input = BitBuffer.fromBitRows(chipRows);
+			if (invert) input.invert();
+			const decodedRows: string[] = [];
+			for (let row = 0; row < input.numRows; row++) {
+				const decoded = input.manchesterDecode(row, 0, 0);
+				if (!decoded.numRows || decoded.bitsPerRow[0] < 8) continue;
+				const outRow = decoded.rowToBitString(0);
+				if (/^0+$/.test(outRow) || /^1+$/.test(outRow) || outRow.length > 96) continue;
+				decodedRows.push(outRow);
+			}
+			return this._pickRepeatedRow(decodedRows, 2, 8);
 		};
 
-		const pickRows = (rows: string[]): { row: string; count: number; rows: number } | null => {
-			if (!rows.length) return null;
-			const counts = new Map<string, number>();
-			for (const row of rows) {
-				if (row.length < 8 || row.length > 96) continue;
-				if (/^0+$/.test(row) || /^1+$/.test(row)) continue;
-				counts.set(row, (counts.get(row) || 0) + 1);
-			}
-			let bestRow = '';
-			let bestCount = 0;
-			for (const [row, count] of counts.entries()) {
-				if (count > bestCount || (count === bestCount && row.length > bestRow.length)) {
-					bestRow = row;
-					bestCount = count;
-				}
-			}
-			return bestRow && bestCount >= 2 ? { row: bestRow, count: bestCount, rows: rows.length } : null;
-		};
-
-		const normal = pickRows(decodePairs(false));
-		const inverted = pickRows(decodePairs(true));
+		const normal = decodeRows(false);
+		const inverted = decodeRows(true);
 		if (!normal && !inverted) return null;
 
-		const best = !inverted || (normal && normal.count >= inverted.count) ? normal! : inverted!;
-		if (best.row.length < 12 || best.count < 3 || best.rows < 3) return null;
+		const best = !inverted || (normal && normal.repeats >= inverted.repeats) ? normal! : inverted!;
+		if (best.row.length < 12 || best.repeats < 3 || best.rows < 3) return null;
 		return {
 			row: best.row,
-			repeats: best.count,
+			repeats: best.repeats,
 			unitUs,
 			rows: best.rows,
 			inverted: !!inverted && best === inverted,
