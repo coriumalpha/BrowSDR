@@ -297,10 +297,14 @@ export class ISMDecoder {
 			}
 
 			const strongGeneric =
-				parsed.totalPairs >= 6 &&
-				unknownRatio <= 0.35 &&
-				baseConf >= 0.54 &&
-				burstMs <= Math.min(this.maxBurstMs, 220);
+				burstMs >= 10 &&
+				burstMs <= Math.min(this.maxBurstMs, 220) &&
+				shortUs >= 120 &&
+				this._runs.length >= 16 &&
+				(
+					(parsed.totalPairs >= 6 && unknownRatio <= 0.35 && baseConf >= 0.54) ||
+					(parsed.totalPairs >= 3 && unknownRatio <= 0.55 && baseConf >= 0.48 && ratio >= 1.4 && ratio <= 7.5)
+				);
 
 			// Keep one-shot generic bursts only when they are unusually clean.
 			// Strict mode in the UI will still hide most of these.
@@ -881,6 +885,7 @@ export class ISMDecoder {
 		if (!normal && !inverted) return null;
 
 		const best = !inverted || (normal && normal.count >= inverted.count) ? normal! : inverted!;
+		if (best.row.length < 12 || best.count < 3 || best.rows < 3) return null;
 		return {
 			row: best.row,
 			repeats: best.count,
