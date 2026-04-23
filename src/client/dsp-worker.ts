@@ -21,6 +21,12 @@ const IF_RATES: Record<string, number> = {
 };
 const AUDIO_RATE = 48000;
 
+interface ProcessOutput {
+    audio: Float32Array | null;
+    ism: Float32Array | null;
+    ismSampleRate: number;
+}
+
 async function startup(): Promise<void> {
     if (!wasmInitPromise) {
         wasmInitPromise = init().then((w: any) => {
@@ -95,24 +101,34 @@ self.onmessage = async (e: MessageEvent) => {
 
         try {
             const processStart = performance.now();
-            const audioOut = processVfoAudio(msg.chunkLen, msg.params);
+            const output = processVfoAudio(msg.chunkLen, msg.params);
             const processEnd = performance.now();
             const dspTime = processEnd - processStart;
+            const transfer: ArrayBuffer[] = [];
+            const payload: any = {
+                type: "audio",
+                samples: null,
+                ismSamples: null,
+                ismSampleRate: output.ismSampleRate,
+                chunkId: msg.chunkId,
+                squelchOpen: vfoState.squelchOpen,
+                squelchDb: vfoState.squelchDb ?? -120,
+                dspTime: dspTime
+            };
 
-            if (audioOut) {
-                // We MUST slice/copy to isolate it from WASM before transferring
-                const cloneOut = audioOut.slice();
-                (self as any).postMessage({
-                    type: "audio",
-                    samples: cloneOut.buffer,
-                    chunkId: msg.chunkId,
-                    squelchOpen: vfoState.squelchOpen,
-                    squelchDb: vfoState.squelchDb ?? -120,
-                    dspTime: dspTime
-                }, [cloneOut.buffer]);
-            } else {
-                self.postMessage({ type: "audio", samples: null, chunkId: msg.chunkId, squelchOpen: vfoState.squelchOpen, squelchDb: vfoState.squelchDb ?? -120, dspTime: dspTime });
+            if (output.audio) {
+                const cloneOut = output.audio.slice();
+                payload.samples = cloneOut.buffer;
+                transfer.push(cloneOut.buffer);
             }
+            if (output.ism) {
+                const cloneIsm = output.ism.slice();
+                payload.ismSamples = cloneIsm.buffer;
+                transfer.push(cloneIsm.buffer);
+            }
+
+            if (transfer.length > 0) (self as any).postMessage(payload, transfer);
+            else self.postMessage(payload);
         } catch (err: any) {
             self.postMessage({ type: "error", error: err.message });
         }
@@ -153,9 +169,10 @@ function configureDDC(params: any, systemCenterFreq: number): void {
     ddc.set_audio_filters(params.lowPass || false, params.highPass || false);
 }
 
-function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | null {
+function processVfoAudio(chunkLenBytes: number, params: any): ProcessOutput {
     const mode = params.mode;
     const bw = params.bandwidth;
+    const empty: ProcessOutput = { audio: null, ism: null, ismSampleRate: AUDIO_RATE };
 
     if (mode === 'nfm' || mode === 'wfm') {
         const useIsmEnvelope = mode === 'nfm' && !!params.ism;
@@ -165,7 +182,7 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
             const outPtr = ddc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);
             const numOutValues = ddc.get_iq_output_len();
             const numIqSamples = numOutValues / 2;
-            if (numIqSamples === 0) return null;
+            if (numIqSamples === 0) return empty;
 
             const iq = new Float32Array(_wasm.memory.buffer, outPtr, numOutValues);
             if (numIqSamples > vfoState.scratchBuf.length) {
@@ -209,14 +226,20 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
             vfoState.squelchOpen = envAvg > 0.002;
 
             const result = vfoState.audioResampler ? vfoState.audioResampler.process(env) : env;
-            if (result.length === 0) return null;
+            if (result.length === 0) {
+                return { audio: null, ism: env.subarray(0, numIqSamples), ismSampleRate: ifRate };
+            }
 
             if (result.length > vfoState.audioTarget.length) {
                 vfoState.audioTarget = new Float32Array(result.length + 1024);
             }
             const outView = vfoState.audioTarget.subarray(0, result.length);
             outView.set(result);
-            return outView;
+            return {
+                audio: outView,
+                ism: env.subarray(0, numIqSamples),
+                ismSampleRate: ifRate,
+            };
         }
 
         let outPtr: number;
@@ -236,7 +259,7 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
         vfoState.squelchOpen = !isSquelched;
         vfoState.squelchDb = ddc.get_squelch_db();
 
-        if (numAudioSamples === 0) return null;
+        if (numAudioSamples === 0) return empty;
 
         const result = new Float32Array(_wasm.memory.buffer, outPtr, numAudioSamples);
 
@@ -268,13 +291,13 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
         }
         const outView = vfoState.audioTarget.subarray(0, numAudioSamples);
         outView.set(result);
-        return outView;
+        return { audio: outView, ism: null, ismSampleRate: AUDIO_RATE };
     } else {
         // Non-FM Path
         const outPtr = ddc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);
         const numOutValues = ddc.get_iq_output_len();
         const numDemodSamples = numOutValues / 2;
-        if (numDemodSamples === 0) return null;
+        if (numDemodSamples === 0) return empty;
 
         const _ddcOut = new Float32Array(_wasm.memory.buffer, outPtr, numOutValues);
 
@@ -297,7 +320,7 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
             vfoState.squelchOpen = false;
             audioDemodRateSamples.fill(0);
             const result = vfoState.audioResampler.process(audioDemodRateSamples);
-            return result.length > 0 ? result : null;
+            return { audio: result.length > 0 ? result : null, ism: null, ismSampleRate: AUDIO_RATE };
         }
 
         vfoState.squelchOpen = params.squelchEnabled && squelchDb >= params.squelchLevel;
@@ -385,13 +408,13 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
         }
 
         const result = vfoState.audioResampler.process(audioDemodRateSamples);
-        if (result.length === 0) return null;
+        if (result.length === 0) return empty;
 
         for (let i = 0; i < result.length; i++) {
             if (result[i] > 1.0) result[i] = 1.0;
             else if (result[i] < -1.0) result[i] = -1.0;
         }
 
-        return result.slice();
+        return { audio: result.slice(), ism: null, ismSampleRate: AUDIO_RATE };
     }
 }

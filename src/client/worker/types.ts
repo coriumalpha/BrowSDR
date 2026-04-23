@@ -38,6 +38,7 @@ export interface VfoState {
 	squelchDb: number;
 	pocsagDecoder: any;
 	ismDecoder: any;
+	ismDecoderSampleRate?: number;
 	ismArmedStatusSent?: boolean;
 	audioQueue: Float32Array;
 	audioQueueLen: number;
@@ -100,6 +101,7 @@ export interface RemoteClientState {
 	mixBuf: Float32Array | null;
 	pocsagDecoders: any[];
 	ismDecoders: any[];
+	ismDecoderSampleRates?: number[];
 	squelchOpen: boolean[];
 }
 

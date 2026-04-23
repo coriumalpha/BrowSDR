@@ -17,26 +17,47 @@ export const ismMethods = {
 		const repeats = Number.isFinite(msg.repeats) ? Number(msg.repeats) : undefined;
 		const pairs = Number.isFinite(msg.pairs) ? Number(msg.pairs) : undefined;
 		const unknownRatio = Number.isFinite(msg.unknownRatio) ? Number(msg.unknownRatio) : undefined;
+		const ts = Date.now();
+		const generic = protocol === 'OOK-PULSE' || protocol === 'OOK-PWM' || protocol === 'OOK-RAW' || protocol === 'UNCLASSIFIED';
+		const key = generic
+			? `${vfoIndex}|${protocol}|${msg.id || ''}|${Math.round((freqMhz || 0) * 1000)}`
+			: `${vfoIndex}|${protocol}|${msg.id || ''}|${msg.model || ''}`;
+
+		let seenCount = 1;
+		if (type === 'burst' && generic) {
+			const stableWindowMs = 5 * 60 * 1000;
+			const prevSeen = this.ism.seen[key];
+			const stale = !prevSeen || !Number.isFinite(prevSeen.lastTs) || (ts - prevSeen.lastTs) > stableWindowMs;
+			const nextSeen = stale
+				? { count: 1, lastTs: ts, confidence, pairs: pairs || 0 }
+				: {
+					count: prevSeen.count + 1,
+					lastTs: ts,
+					confidence: Math.max(prevSeen.confidence, confidence),
+					pairs: Math.max(prevSeen.pairs, pairs || 0),
+				};
+			this.ism.seen[key] = nextSeen;
+			seenCount = nextSeen.count;
+		}
+
 		// Keep almost everything visible while still dropping obvious noise.
 		// Users expect to at least see burst activity lines when a remote transmits.
 		if (protocol === 'UNCLASSIFIED' && confidence < 0.08) {
 			return;
 		}
 		if (this.ism.filterMode === 'strict' && type === 'burst') {
-			const generic = protocol === 'OOK-PULSE' || protocol === 'OOK-PWM' || protocol === 'OOK-RAW' || protocol === 'UNCLASSIFIED';
 			if (generic) {
 				const rep = repeats ?? 1;
-				if (rep < 2) return;
+				const strongCandidate =
+					confidence >= 0.82 &&
+					(pairs ?? 0) >= 18 &&
+					(typeof unknownRatio !== 'number' || unknownRatio <= 0.14);
+				if (rep < 2 && seenCount < 2 && !strongCandidate) return;
 			}
 		}
 
 		const time = new Date().toLocaleTimeString();
-		const ts = Date.now();
 		const freq = freqMhz ? this.formatFreq(freqMhz) + ' MHz' : '';
-		const generic = protocol === 'OOK-PULSE' || protocol === 'OOK-PWM' || protocol === 'OOK-RAW' || protocol === 'UNCLASSIFIED';
-		const key = generic
-			? `${vfoIndex}|${protocol}|${msg.id || ''}|${Math.round((freqMhz || 0) * 1000)}`
-			: `${vfoIndex}|${protocol}|${msg.id || ''}|${msg.model || ''}`;
 
 		// Group repeated detections of the same frame train to keep the panel readable.
 		const trainWindowMs = 1400;
@@ -55,7 +76,7 @@ export const ismMethods = {
 				typeof e.unknownRatio === 'number' ? e.unknownRatio : 1,
 				typeof unknownRatio === 'number' ? unknownRatio : 1
 			);
-			e.hits = (e.hits || 1) + 1;
+			e.hits = Math.max((e.hits || 1) + 1, seenCount);
 			e._ts = ts;
 			merged = true;
 			break;
@@ -74,7 +95,7 @@ export const ismMethods = {
 			repeats,
 			pairs,
 			unknownRatio,
-			hits: 1,
+			hits: generic ? seenCount : 1,
 			_ts: ts,
 			_key: key,
 		});
@@ -92,6 +113,7 @@ export const ismMethods = {
 	},
 	clearIsm(this: AppInstance) {
 		this.ism.log = [];
+		this.ism.seen = {};
 	},
 	exportIsm(this: AppInstance) {
 		const lines = this.ism.log.map((e: any) => {

@@ -112,6 +112,7 @@ export async function startRxStream(
 			squelchDb: -120,
 			pocsagDecoder: null,
 			ismDecoder: null,
+			ismDecoderSampleRate: undefined,
 			audioQueue: new Float32Array(32768),
 			audioQueueLen: 0,
 		});
@@ -280,6 +281,7 @@ export async function startRxStream(
 				vfoState.ssbPhase = 0;
 				vfoState.pocsagDecoder = null;  // reset POCSAG on mode change
 				vfoState.ismDecoder = null;     // reset ISM on mode change
+				vfoState.ismDecoderSampleRate = undefined;
 
 				ddc.set_wfm_mode(mode === 'wfm');
 
@@ -571,16 +573,23 @@ export async function startRxStream(
 					state.pocsagDecoder = null;
 				}
 
-				if (ismCallback && params.ism && params.mode === 'nfm') {
-					if (!state.ismDecoder) {
+			}
+
+			if (ismCallback && params.ism && params.mode === 'nfm') {
+				const ismRate = Number.isFinite(msg.ismSampleRate) ? Number(msg.ismSampleRate) : AUDIO_RATE;
+				const ismInput = msg.ismSamples ? new Float32Array(msg.ismSamples) : (msg.samples ? new Float32Array(msg.samples) : null);
+				if (ismInput && ismInput.length > 0) {
+					if (!state.ismDecoder || state.ismDecoderSampleRate !== ismRate) {
 						state.ismDecoder = new ISMDecoder((imsg: any) => {
 							ismCallback(v, params.freq, imsg);
-						}, AUDIO_RATE);
+						}, ismRate);
+						state.ismDecoderSampleRate = ismRate;
 					}
-					state.ismDecoder.process(out);
-				} else if (!params.ism && state.ismDecoder) {
-					state.ismDecoder = null;
+					state.ismDecoder.process(ismInput);
 				}
+			} else if (!params.ism && state.ismDecoder) {
+				state.ismDecoder = null;
+				state.ismDecoderSampleRate = undefined;
 			}
 
 			// Mixer block logic

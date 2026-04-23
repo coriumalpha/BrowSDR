@@ -73,6 +73,7 @@ export function _getOrCreateClientState(this: Backend, clientId: string): Remote
 			mixBuf: null,
 			pocsagDecoders: [],
 			ismDecoders: [],
+			ismDecoderSampleRates: [],
 			squelchOpen: []
 		});
 	}
@@ -114,8 +115,14 @@ export async function setRemoteVfoParams(this: Backend, clientId: string, index:
 				if (curr !== prev && this._remoteHostSquelchCb) {
 					this._remoteHostSquelchCb(clientId, state.squelchOpen.slice());
 				}
-				if (msg.samples) {
-					this._queueRemoteAudio(clientId, index, new Float32Array(msg.samples));
+				if (msg.samples || msg.ismSamples) {
+					this._queueRemoteAudio(
+						clientId,
+						index,
+						msg.samples ? new Float32Array(msg.samples) : null,
+						msg.ismSamples ? new Float32Array(msg.ismSamples) : null,
+						Number.isFinite(msg.ismSampleRate) ? Number(msg.ismSampleRate) : AUDIO_RATE
+					);
 				}
 			}
 		};
@@ -155,9 +162,10 @@ export async function removeRemoteVfo(this: Backend, clientId: string, index: nu
 	state.audioQueues.splice(index, 1);
 	state.pocsagDecoders.splice(index, 1);
 	state.ismDecoders.splice(index, 1);
+	if (state.ismDecoderSampleRates) state.ismDecoderSampleRates.splice(index, 1);
 }
 
-export function _queueRemoteAudio(this: Backend, clientId: string, index: number, samples: Float32Array): void {
+export function _queueRemoteAudio(this: Backend, clientId: string, index: number, samples: Float32Array | null, ismSamples: Float32Array | null = null, ismSampleRate = AUDIO_RATE): void {
 	const state = this._remoteClients && this._remoteClients.get(clientId);
 	if (!state) return;
 	const entry = state.audioQueues[index];
@@ -165,7 +173,7 @@ export function _queueRemoteAudio(this: Backend, clientId: string, index: number
 
 	// Run POCSAG decoding on the raw audio before mixing
 	const params = state.params[index];
-	if (this._remoteHostPocsagCb && params && params.pocsag && params.mode === 'nfm') {
+	if (samples && this._remoteHostPocsagCb && params && params.pocsag && params.mode === 'nfm') {
 		if (!state.pocsagDecoders[index]) {
 			state.pocsagDecoders[index] = new POCSAGDecoder(AUDIO_RATE, (pmsg: any) => {
 				this._remoteHostPocsagCb(clientId, index, params.freq, pmsg);
@@ -177,16 +185,25 @@ export function _queueRemoteAudio(this: Backend, clientId: string, index: number
 	}
 
 	if (this._remoteHostIsmCb && params && params.ism && params.mode === 'nfm') {
-		if (!state.ismDecoders[index]) {
-			state.ismDecoders[index] = new ISMDecoder((imsg: any) => {
-				this._remoteHostIsmCb(clientId, index, params.freq, imsg);
-			}, AUDIO_RATE);
+		const decoderInput = (ismSamples && ismSamples.length > 0) ? ismSamples : samples;
+		if (!decoderInput || decoderInput.length === 0) {
+			// Nothing decodable in this chunk.
+		} else {
+			if (!state.ismDecoders[index] || state.ismDecoderSampleRates?.[index] !== ismSampleRate) {
+				state.ismDecoders[index] = new ISMDecoder((imsg: any) => {
+					this._remoteHostIsmCb(clientId, index, params.freq, imsg);
+				}, ismSampleRate);
+				if (!state.ismDecoderSampleRates) state.ismDecoderSampleRates = [];
+				state.ismDecoderSampleRates[index] = ismSampleRate;
+			}
+			state.ismDecoders[index].process(decoderInput);
 		}
-		state.ismDecoders[index].process(samples);
 	} else if (state.ismDecoders[index]) {
 		state.ismDecoders[index] = null;
+		if (state.ismDecoderSampleRates) delete state.ismDecoderSampleRates[index];
 	}
 
+	if (!samples || samples.length === 0) return;
 	const needed = entry.len + samples.length;
 	if (needed > entry.queue.length) {
 		const grown = new Float32Array(Math.max(needed * 2, 32768));
@@ -257,8 +274,14 @@ export function _reinitRemoteClientWorkers(this: Backend): void {
 					if (curr !== prev && this._remoteHostSquelchCb) {
 						this._remoteHostSquelchCb(clientId, state.squelchOpen.slice());
 					}
-					if (msg.samples) {
-						this._queueRemoteAudio(clientId, i, new Float32Array(msg.samples));
+					if (msg.samples || msg.ismSamples) {
+						this._queueRemoteAudio(
+							clientId,
+							i,
+							msg.samples ? new Float32Array(msg.samples) : null,
+							msg.ismSamples ? new Float32Array(msg.ismSamples) : null,
+							Number.isFinite(msg.ismSampleRate) ? Number(msg.ismSampleRate) : AUDIO_RATE
+						);
 					}
 				}
 			};
