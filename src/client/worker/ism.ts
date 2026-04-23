@@ -29,6 +29,14 @@ interface PpmDecode {
 	rows: number;
 }
 
+interface ManchesterDecode {
+	row: string;
+	repeats: number;
+	unitUs: number;
+	rows: number;
+	inverted: boolean;
+}
+
 interface DecodedProtocol {
 	protocol: string;
 	model?: string;
@@ -528,6 +536,32 @@ export class ISMDecoder {
 			};
 		}
 
+		const manchester = this._decodeManchester(runsUs);
+		if (manchester) {
+			const rowHex = parseInt(manchester.row, 2).toString(16).toUpperCase().padStart(Math.ceil(manchester.row.length / 4), '0');
+			const confidence = Math.max(
+				0.45,
+				Math.min(
+					0.88,
+					0.42 * Math.min(1, manchester.repeats / 4) +
+					0.24 * Math.min(1, manchester.row.length / 32) +
+					0.18 * Math.max(0, 1 - unknownRatio) +
+					0.16
+				)
+			);
+			return {
+				protocol: 'FLEX-MANCHESTER',
+				model: manchester.inverted ? 'Manchester / bi-phase (inv)' : 'Manchester / bi-phase',
+				id: this._hash8(manchester.row).slice(0, 8),
+				raw: manchester.row,
+				text: `bits=${manchester.row.length} rows=${manchester.rows} repeats=${manchester.repeats} code=0x${rowHex} unit=${manchester.unitUs.toFixed(0)}us`,
+				confidence,
+				repeats: manchester.repeats,
+				pairs: parsed.totalPairs,
+				unknownRatio,
+			};
+		}
+
 		// Fallback for streams where sync separators are noisy/missing:
 		// scan the full symbol stream for repeated fixed-length frames.
 		if (shortUs >= 140 && shortUs <= 1200 && unknownRatio <= 0.34) {
@@ -765,6 +799,94 @@ export class ISMDecoder {
 			shortGapUs,
 			longGapUs,
 			rows: rows.length,
+		};
+	}
+
+	private _decodeManchester(runsUs: RunUs[]): ManchesterDecode | null {
+		if (runsUs.length < 16) return null;
+
+		const candidateRuns = runsUs
+			.map((r) => r.us)
+			.filter((v) => v >= 80 && v <= 4000);
+		if (candidateRuns.length < 12) return null;
+
+		const unitUs = this._percentile(candidateRuns, 0.35);
+		if (unitUs < 80 || unitUs > 1800) return null;
+
+		let regular = 0;
+		for (const us of candidateRuns) {
+			const q = us / Math.max(unitUs, 1);
+			if ((q >= 0.55 && q <= 1.45) || (q >= 1.55 && q <= 2.45)) regular++;
+		}
+		if ((regular / candidateRuns.length) < 0.72) return null;
+
+		const chips: number[] = [];
+		for (const run of runsUs) {
+			const q = run.us / Math.max(unitUs, 1);
+			let count = Math.round(q);
+			if (count < 1) count = 1;
+			if (count > 3) {
+				// Long outliers usually indicate frame gaps / noise, not valid chips.
+				count = 0;
+			}
+			for (let i = 0; i < count; i++) chips.push(run.level);
+			if (count === 0 && chips.length && chips[chips.length - 1] !== 2) chips.push(2);
+		}
+		if (chips.length < 24) return null;
+
+		const decodePairs = (invert: boolean): string[] => {
+			const rows: string[] = [];
+			let current = '';
+			for (let i = 0; i + 1 < chips.length; i += 2) {
+				const a = chips[i];
+				const b = chips[i + 1];
+				if (a === 2 || b === 2) {
+					if (current.length >= 8) rows.push(current);
+					current = '';
+					continue;
+				}
+				if (a === b) {
+					if (current.length >= 8) rows.push(current);
+					current = '';
+					continue;
+				}
+				if (a === 1 && b === 0) current += invert ? '0' : '1';
+				else if (a === 0 && b === 1) current += invert ? '1' : '0';
+			}
+			if (current.length >= 8) rows.push(current);
+			return rows;
+		};
+
+		const pickRows = (rows: string[]): { row: string; count: number; rows: number } | null => {
+			if (!rows.length) return null;
+			const counts = new Map<string, number>();
+			for (const row of rows) {
+				if (row.length < 8 || row.length > 96) continue;
+				if (/^0+$/.test(row) || /^1+$/.test(row)) continue;
+				counts.set(row, (counts.get(row) || 0) + 1);
+			}
+			let bestRow = '';
+			let bestCount = 0;
+			for (const [row, count] of counts.entries()) {
+				if (count > bestCount || (count === bestCount && row.length > bestRow.length)) {
+					bestRow = row;
+					bestCount = count;
+				}
+			}
+			return bestRow && bestCount >= 2 ? { row: bestRow, count: bestCount, rows: rows.length } : null;
+		};
+
+		const normal = pickRows(decodePairs(false));
+		const inverted = pickRows(decodePairs(true));
+		if (!normal && !inverted) return null;
+
+		const best = !inverted || (normal && normal.count >= inverted.count) ? normal! : inverted!;
+		return {
+			row: best.row,
+			repeats: best.count,
+			unitUs,
+			rows: best.rows,
+			inverted: !!inverted && best === inverted,
 		};
 	}
 
