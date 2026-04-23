@@ -87,9 +87,9 @@ export class ISMDecoder {
 	constructor(private onMessage: (msg: ISMMessage) => void, sampleRate = 48000) {
 		const sr = Math.max(8000, sampleRate | 0);
 		this.sampleUs = 1_000_000 / sr;
-		this.minRunSamples = Math.max(2, Math.round(sr * 0.00004));
-		this.endGapSamples = Math.max(24, Math.round(sr * 0.0045));
-		this.maxBurstSamples = Math.max(this.endGapSamples * 2, Math.round(sr * 0.18));
+		this.minRunSamples = Math.max(2, Math.round(sr * 0.000024));
+		this.endGapSamples = Math.max(18, Math.round(sr * 0.0032));
+		this.maxBurstSamples = Math.max(this.endGapSamples * 2, Math.round(sr * 0.26));
 		this.endGapMs = (this.endGapSamples * this.sampleUs) / 1000;
 		this.maxBurstMs = (this.maxBurstSamples * this.sampleUs) / 1000;
 	}
@@ -144,8 +144,8 @@ export class ISMDecoder {
 	}
 
 	private _sliceBit(env: number): 0 | 1 {
-		const hi = Math.min(Math.max(this._noise * 3.2, 0.0045), 0.20);
-		const lo = Math.min(Math.max(this._noise * 2.0, 0.0028), 0.12);
+		const hi = Math.min(Math.max(this._noise * 2.45, 0.0028), 0.18);
+		const lo = Math.min(Math.max(this._noise * 1.55, 0.0018), 0.10);
 
 		if (this._bitState) {
 			if (env < lo) this._bitState = false;
@@ -297,10 +297,10 @@ export class ISMDecoder {
 			}
 
 			const strongGeneric =
-				parsed.totalPairs >= 10 &&
-				unknownRatio <= 0.18 &&
-				baseConf >= 0.72 &&
-				burstMs <= 150;
+				parsed.totalPairs >= 6 &&
+				unknownRatio <= 0.35 &&
+				baseConf >= 0.54 &&
+				burstMs <= Math.min(this.maxBurstMs, 220);
 
 			// Keep one-shot generic bursts only when they are unusually clean.
 			// Strict mode in the UI will still hide most of these.

@@ -154,7 +154,7 @@ function configureDDC(params: any, systemCenterFreq: number): void {
     // so we still catch typical +/- tens of kHz offsets around 433.92 MHz.
     const effectiveBandwidth =
         sniffWide
-            ? Math.max(params.bandwidth || 12500, 220000)
+            ? Math.max(params.bandwidth || 12500, 280000)
             : (params.bandwidth || 150000);
     ddc.set_shift(systemSampleRate, offsetFreq);
     ddc.set_bandwidth(effectiveBandwidth);
