@@ -105,6 +105,12 @@ export const remoteMethods = {
 				this._webrtc.sendCommandTo(clientId, { type: 'pocsag', vfoIndex, freq, msg });
 			}
 		}));
+		// Setup ISM message callback â€” forward decoded messages to the specific remote client
+		await this.backend.setRemoteHostIsmCallback(Comlink.proxy((clientId: string, vfoIndex: number, freq: number, msg: any) => {
+			if (this._webrtc) {
+				this._webrtc.sendCommandTo(clientId, { type: 'ism', vfoIndex, freq, msg });
+			}
+		}));
 		// Forward squelch state changes so remote clients can track frequency activity
 		await this.backend.setRemoteHostSquelchCallback(Comlink.proxy((clientId: string, squelchOpen: boolean[]) => {
 			if (this._webrtc) {
@@ -300,6 +306,10 @@ export const remoteMethods = {
 		} else if (cmd.type === 'pocsag') {
 			if (this.remoteMode === 'client') {
 				this._onPocsagMessage(cmd.vfoIndex, cmd.freq, cmd.msg);
+			}
+		} else if (cmd.type === 'ism') {
+			if (this.remoteMode === 'client') {
+				this._onIsmMessage(cmd.vfoIndex, cmd.freq, cmd.msg);
 			}
 		} else if (cmd.type === 'squelchState') {
 			if (this.remoteMode === 'client') {

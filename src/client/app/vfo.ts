@@ -64,6 +64,7 @@ export const vfoMethods = {
 				rdsRegion: vfo.rdsRegion,
 				volume: vfo.volume,
 				pocsag: vfo.pocsag,
+				ism: vfo.ism,
 			};
 
 			if (this.remoteMode === 'client' && this._webrtc) {

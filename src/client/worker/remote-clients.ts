@@ -21,6 +21,7 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 import type { VfoParams, RemoteClientState } from './types';
 import { AUDIO_RATE } from './types';
 import { POCSAGDecoder } from './pocsag';
+import { ISMDecoder } from './ism';
 import { ensureWasmInitialized, init } from './wasm-init';
 
 import type { Backend } from './backend';
@@ -48,6 +49,10 @@ export async function setRemoteHostPocsagCallback(this: Backend, callback: any):
 	this._remoteHostPocsagCb = callback;
 }
 
+export async function setRemoteHostIsmCallback(this: Backend, callback: any): Promise<void> {
+	this._remoteHostIsmCb = callback;
+}
+
 export async function setRemoteHostSquelchCallback(this: Backend, callback: any): Promise<void> {
 	this._remoteHostSquelchCb = callback;
 }
@@ -67,6 +72,7 @@ export function _getOrCreateClientState(this: Backend, clientId: string): Remote
 			audioQueues: [],
 			mixBuf: null,
 			pocsagDecoders: [],
+			ismDecoders: [],
 			squelchOpen: []
 		});
 	}
@@ -148,6 +154,7 @@ export async function removeRemoteVfo(this: Backend, clientId: string, index: nu
 	state.params.splice(index, 1);
 	state.audioQueues.splice(index, 1);
 	state.pocsagDecoders.splice(index, 1);
+	state.ismDecoders.splice(index, 1);
 }
 
 export function _queueRemoteAudio(this: Backend, clientId: string, index: number, samples: Float32Array): void {
@@ -167,6 +174,17 @@ export function _queueRemoteAudio(this: Backend, clientId: string, index: number
 		state.pocsagDecoders[index].process(samples);
 	} else if (state.pocsagDecoders[index]) {
 		state.pocsagDecoders[index] = null;
+	}
+
+	if (this._remoteHostIsmCb && params && params.ism && params.mode === 'nfm') {
+		if (!state.ismDecoders[index]) {
+			state.ismDecoders[index] = new ISMDecoder((imsg: any) => {
+				this._remoteHostIsmCb(clientId, index, params.freq, imsg);
+			}, AUDIO_RATE);
+		}
+		state.ismDecoders[index].process(samples);
+	} else if (state.ismDecoders[index]) {
+		state.ismDecoders[index] = null;
 	}
 
 	const needed = entry.len + samples.length;

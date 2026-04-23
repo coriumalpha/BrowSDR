@@ -120,7 +120,8 @@ self.onmessage = async (e: MessageEvent) => {
 };
 
 function configureDDC(params: any, systemCenterFreq: number): void {
-    const ifRate = IF_RATES[params.mode];
+    const sniffWide = params.mode === 'nfm' && !!params.ism;
+    const ifRate = sniffWide ? IF_RATES.wfm : IF_RATES[params.mode];
     if (ifRate === undefined) {
         console.error(`[DSP Worker] Unknown mode "${params.mode}" — no IF rate defined. Skipping DDC config.`);
         return;
@@ -132,8 +133,15 @@ function configureDDC(params: any, systemCenterFreq: number): void {
     }
 
     const offsetFreq = (params.freq - systemCenterFreq) * 1e6;
+    // ISM/OOK remotes are often frequency-shifted (cheap SAW oscillators).
+    // Keep the user VFO UI as-is, but widen the RF channel filter for decode
+    // so we still catch typical +/- tens of kHz offsets around 433.92 MHz.
+    const effectiveBandwidth =
+        sniffWide
+            ? Math.max(params.bandwidth || 12500, 220000)
+            : (params.bandwidth || 150000);
     ddc.set_shift(systemSampleRate, offsetFreq);
-    ddc.set_bandwidth(params.bandwidth);
+    ddc.set_bandwidth(effectiveBandwidth);
     ddc.set_squelch(params.squelchLevel, params.squelchEnabled);
     if (params.mode === 'wfm') {
         ddc.set_wfm_mode(true);
@@ -150,6 +158,67 @@ function processVfoAudio(chunkLenBytes: number, params: any): Float32Array | nul
     const bw = params.bandwidth;
 
     if (mode === 'nfm' || mode === 'wfm') {
+        const useIsmEnvelope = mode === 'nfm' && !!params.ism;
+        if (useIsmEnvelope) {
+            // For OOK/ASK decoding we use IQ magnitude envelope (rtl_433-style path)
+            // instead of FM-demod audio. This yields clearer pulse/gap boundaries.
+            const outPtr = ddc.process_iq_only_ptr(sharedIqPtr, chunkLenBytes);
+            const numOutValues = ddc.get_iq_output_len();
+            const numIqSamples = numOutValues / 2;
+            if (numIqSamples === 0) return null;
+
+            const iq = new Float32Array(_wasm.memory.buffer, outPtr, numOutValues);
+            if (numIqSamples > vfoState.scratchBuf.length) {
+                vfoState.scratchBuf = new Float32Array(numIqSamples + 128);
+            }
+            const env = vfoState.scratchBuf.subarray(0, numIqSamples);
+
+            const ifRate = vfoState.currentIfRate || IF_RATES.wfm;
+            const dcAlpha = Math.exp(-1.0 / Math.max(1, ifRate * 0.015)); // ~15 ms DC tracker
+            const dcBeta = 1.0 - dcAlpha;
+            const agcAttack = Math.min(0.15, 400.0 / ifRate);
+            const agcDecay = Math.min(0.02, 25.0 / ifRate);
+
+            let dc = vfoState.dcAvg || 0;
+            let agc = Math.max(vfoState.agcGain || 0.02, 1e-6);
+            let envSum = 0;
+
+            for (let i = 0; i < numIqSamples; i++) {
+                const dI = iq[i * 2];
+                const dQ = iq[i * 2 + 1];
+                const mag = Math.sqrt(dI * dI + dQ * dQ);
+
+                dc = dcAlpha * dc + dcBeta * mag;
+                let e = mag - dc;
+                if (e < 0) e = 0;
+                envSum += e;
+
+                if (e > agc) agc += (e - agc) * agcAttack;
+                else agc += (e - agc) * agcDecay;
+
+                let n = e / (agc * 2.2 + 1e-9);
+                if (n > 1.0) n = 1.0;
+                env[i] = n;
+            }
+
+            vfoState.dcAvg = dc;
+            vfoState.agcGain = agc;
+
+            const envAvg = envSum / numIqSamples;
+            vfoState.squelchDb = 20 * Math.log10(envAvg + 1e-9);
+            vfoState.squelchOpen = envAvg > 0.002;
+
+            const result = vfoState.audioResampler ? vfoState.audioResampler.process(env) : env;
+            if (result.length === 0) return null;
+
+            if (result.length > vfoState.audioTarget.length) {
+                vfoState.audioTarget = new Float32Array(result.length + 1024);
+            }
+            const outView = vfoState.audioTarget.subarray(0, result.length);
+            outView.set(result);
+            return outView;
+        }
+
         let outPtr: number;
         try {
             outPtr = ddc.process_ptr(sharedIqPtr, chunkLenBytes);

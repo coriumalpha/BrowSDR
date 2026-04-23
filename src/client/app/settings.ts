@@ -9,6 +9,8 @@ export const settingsMethods = {
 			gains: this.gains,
 			locks: this.locks,
 			vfos: this.vfos,
+			ismFilterMode: this.ism?.filterMode || 'sniffer',
+			ismSummaryOpen: !!this.ism?.summaryOpen,
 			view: this.view,
 			collapsedPanels: this.collapsedPanels,
 			recentRemoteIds: this.recentRemoteIds,
@@ -44,6 +46,12 @@ export const settingsMethods = {
 				}
 				if (setting.activeVfoIndex !== undefined) this.activeVfoIndex = setting.activeVfoIndex;
 				else if (setting.activeVfo) this.activeVfoIndex = setting.activeVfo - 1;
+				if (setting.ismFilterMode === 'strict' || setting.ismFilterMode === 'sniffer') {
+					this.ism.filterMode = setting.ismFilterMode;
+				} else {
+					this.ism.filterMode = 'sniffer';
+				}
+				this.ism.summaryOpen = !!setting.ismSummaryOpen;
 				if (setting.view) Object.assign(this.view, setting.view);
 				if (setting.collapsedPanels && typeof setting.collapsedPanels === 'object') Object.assign(this.collapsedPanels, setting.collapsedPanels);
 				if (setting.recentRemoteIds && Array.isArray(setting.recentRemoteIds)) this.recentRemoteIds = setting.recentRemoteIds;

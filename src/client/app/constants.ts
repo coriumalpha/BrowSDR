@@ -23,6 +23,7 @@ export const makeDefaultVfo = (freq = 100.0) => ({
 	rdsRegion: 'eu',
 	volume: 50,
 	pocsag: false,
+	ism: false,
 	displayFreq: freq.toFixed(6).padStart(10, '0'),
 	focused: false,
 });

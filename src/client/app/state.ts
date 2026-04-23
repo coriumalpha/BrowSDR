@@ -76,6 +76,12 @@ export function createAppData() {
 			panelOpen: false,
 			log: [] as Array<{ time: string; freq: string; vfoIndex: number; capcode: string; type: string; text: string; baud: number }>,
 		},
+		ism: {
+			panelOpen: false,
+			filterMode: 'sniffer' as 'strict' | 'sniffer',
+			summaryOpen: false,
+			log: [] as Array<{ time: string; freq: string; vfoIndex: number; type: 'status' | 'burst'; protocol: string; model: string; id: string; raw: string; text: string; confidence: number; repeats?: number; pairs?: number; unknownRatio?: number; hits?: number; _ts?: number; _key?: string }>,
+		},
 		bookmarkCategories: BOOKMARK_CATEGORIES,
 		bookmarkCategoryFilter: '',
 		bookmarkSearch: '',

@@ -22,6 +22,7 @@ import * as Comlink from 'comlink';
 import { FFT } from './wasm-init';
 import { RationalResampler } from './dsp-pipeline';
 import { POCSAGDecoder } from './pocsag';
+import { ISMDecoder } from './ism';
 import type { RxStreamOpts, VfoParams, VfoState, PerfCounters } from './types';
 import { IF_RATES, AUDIO_RATE } from './types';
 import type { Backend } from './backend';
@@ -34,7 +35,8 @@ export async function startRxStream(
 	spectrumCallback: any,
 	audioCallback: any,
 	whisperCallback: any,
-	pocsagCallback: any
+	pocsagCallback: any,
+	ismCallback: any
 ): Promise<void> {
 	if (_streamStarting) return;
 	_streamStarting = true;
@@ -87,7 +89,7 @@ export async function startRxStream(
 		if (backend.ddcs) backend.ddcs.forEach((d: any) => { try { d.free(); } catch (_) { } });
 
 		// Initialize dynamic VFO arrays (start with one VFO)
-		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false };
+		const defaultVfoParams: VfoParams = { freq: centerFreq, mode: 'wfm', enabled: false, deEmphasis: '50us', squelchEnabled: false, squelchLevel: -100.0, lowPass: true, highPass: false, bandwidth: initialBandwidth, volume: 50, pocsag: false, ism: false };
 		backend.vfoParams = [{ ...defaultVfoParams }];
 
 		const MAX_USB_SAMPLES = 131072;
@@ -109,6 +111,7 @@ export async function startRxStream(
 			squelchOpen: false,
 			squelchDb: -120,
 			pocsagDecoder: null,
+			ismDecoder: null,
 			audioQueue: new Float32Array(32768),
 			audioQueueLen: 0,
 		});
@@ -259,7 +262,7 @@ export async function startRxStream(
 		const processVfoAudio = (iqPtr: number, numIqBytes: number, ddc: any, params: VfoParams, vfoState: VfoState): Float32Array | null => {
 			// Mute = silence the speakers, not stop DSP. Still run the pipeline
 			// when POCSAG decoding is active so messages aren't lost while muted.
-			if (!params.enabled && !params.pocsag) return null;
+			if (!params.enabled && !params.pocsag && !params.ism) return null;
 
 			// Shift freq: The tuned freq relative to the center freq
 			const shiftHz = (params.freq - centerFreq) * 1e6;
@@ -276,6 +279,7 @@ export async function startRxStream(
 				vfoState.agcGain = 1.0;
 				vfoState.ssbPhase = 0;
 				vfoState.pocsagDecoder = null;  // reset POCSAG on mode change
+				vfoState.ismDecoder = null;     // reset ISM on mode change
 
 				ddc.set_wfm_mode(mode === 'wfm');
 
@@ -524,6 +528,19 @@ export async function startRxStream(
 				perf.audioCalls++;
 			}
 
+			if (ismCallback && params.ism && params.mode === 'nfm' && !state.ismArmedStatusSent) {
+				const wideIf = params.ism && params.mode === 'nfm' ? 'on' : 'off';
+				ismCallback(v, params.freq, {
+					type: 'status',
+					protocol: 'ISM-SNIFFER',
+					text: `ISM sniffer armed bw=${params.bandwidth}Hz wideIF=${wideIf}`,
+					confidence: 1,
+				});
+				state.ismArmedStatusSent = true;
+			} else if ((!params.ism || params.mode !== 'nfm') && state.ismArmedStatusSent) {
+				state.ismArmedStatusSent = false;
+			}
+
 			if (msg.samples) {
 				const out = new Float32Array(msg.samples);
 				perf.audioSamplesOut += out.length;
@@ -538,7 +555,7 @@ export async function startRxStream(
 					state.audioQueue.set(out, qLen);
 					state.audioQueueLen += out.length;
 
-					if (!params.pocsag && whisperCallback) {
+					if (!params.pocsag && !params.ism && whisperCallback) {
 						whisperCallback(v, params.freq, out);
 					}
 				}
@@ -552,6 +569,17 @@ export async function startRxStream(
 					state.pocsagDecoder.process(out);
 				} else if (!params.pocsag && state.pocsagDecoder) {
 					state.pocsagDecoder = null;
+				}
+
+				if (ismCallback && params.ism && params.mode === 'nfm') {
+					if (!state.ismDecoder) {
+						state.ismDecoder = new ISMDecoder((imsg: any) => {
+							ismCallback(v, params.freq, imsg);
+						}, AUDIO_RATE);
+					}
+					state.ismDecoder.process(out);
+				} else if (!params.ism && state.ismDecoder) {
+					state.ismDecoder = null;
 				}
 			}
 

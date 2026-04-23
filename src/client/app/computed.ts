@@ -6,6 +6,63 @@ export const computedProperties = {
 		const host = window.location.hostname;
 		return host === 'localhost' || host === '127.0.0.1';
 	},
+	ismSummaries(this: AppInstance) {
+		const genericProtocols = new Set(['OOK-PULSE', 'OOK-PWM', 'OOK-RAW', 'UNCLASSIFIED']);
+		const buckets = new Map<string, any>();
+		for (const entry of this.ism.log) {
+			if (!entry || entry.type !== 'burst') continue;
+			const key = entry._key || `${entry.protocol}|${entry.model || ''}|${entry.id || ''}`;
+			let bucket = buckets.get(key);
+			if (!bucket) {
+				const isGeneric = genericProtocols.has(entry.protocol || '');
+				bucket = {
+					key,
+					protocol: entry.protocol || 'UNCLASSIFIED',
+					model: entry.model || '',
+					id: entry.id || '',
+					count: 0,
+					hits: 0,
+					confidence: 0,
+					repeats: 0,
+					pairs: 0,
+					unknownRatio: 1,
+					lastTime: '',
+					lastFreq: '',
+					lastText: '',
+					lastTs: 0,
+					isGeneric,
+					label: isGeneric ? 'Generic burst' : (entry.model || entry.protocol || 'Detection'),
+				};
+				buckets.set(key, bucket);
+			}
+			bucket.count++;
+			bucket.hits = Math.max(bucket.hits, entry.hits || 1);
+			bucket.confidence = Math.max(bucket.confidence, entry.confidence || 0);
+			bucket.repeats = Math.max(bucket.repeats, entry.repeats || 0);
+			bucket.pairs = Math.max(bucket.pairs, entry.pairs || 0);
+			bucket.unknownRatio = Math.min(bucket.unknownRatio, typeof entry.unknownRatio === 'number' ? entry.unknownRatio : 1);
+			const ts = Number.isFinite(entry._ts) ? Number(entry._ts) : 0;
+			if (ts >= bucket.lastTs) {
+				bucket.lastTs = ts;
+				bucket.lastTime = entry.time || '';
+				bucket.lastFreq = entry.freq || '';
+				bucket.lastText = entry.text || '';
+			}
+		}
+
+		return Array.from(buckets.values())
+			.filter((item: any) => {
+				if (!item.isGeneric) return true;
+				return item.repeats >= 2 || item.hits >= 2 || item.count >= 2;
+			})
+			.sort((a, b) =>
+				(b.count - a.count) ||
+				(b.confidence - a.confidence) ||
+				(b.lastTs - a.lastTs) ||
+				a.protocol.localeCompare(b.protocol)
+			)
+			.slice(0, 12);
+	},
 	activeAudioVfos(this: AppInstance) {
 		const active: Array<{ index: number; vfo: any }> = [];
 		for (let i = 0; i < this.vfos.length; i++) {

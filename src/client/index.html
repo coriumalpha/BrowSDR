@@ -85,6 +85,9 @@
 				<button class="icon-btn" @click="togglePocsagPanel" :class="{ active: pocsag.panelOpen }" title="POCSAG Pager Decoder">
 					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 12H7v-2h10v2zm0-3H7V9h10v2zm0-3H7V6h10v2z"/></svg>
 				</button>
+				<button class="icon-btn" @click="toggleIsmPanel" :class="{ active: ism.panelOpen }" title="ISM/433 Decoder">
+					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 14 0h2a9 9 0 0 0-9-9zm0 4a5 5 0 0 0-5 5h2a3 3 0 1 1 6 0h2a5 5 0 0 0-5-5zm0 4a1 1 0 0 0-1 1v9h2v-9a1 1 0 0 0-1-1z"/></svg>
+				</button>
 				<button class="icon-btn" @click="showActivity = !showActivity" :class="{ active: showActivity }" title="Frequency Activity Tracker">
 					<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99l1.5 1.5z"/></svg>
 				</button>
@@ -304,6 +307,14 @@
 								<input type="checkbox" v-model="vfo.pocsag" @change="updateBackendVfoParams(i)">
 								<span class="checkmark"></span>
 								Decode POCSAG
+							</label>
+						</div>
+
+						<div class="form-row full-checkbox-row" v-if="vfo.mode === 'nfm'">
+							<label class="custom-checkbox">
+								<input type="checkbox" v-model="vfo.ism" @change="updateBackendVfoParams(i)">
+								<span class="checkmark"></span>
+								Decode ISM (433/868)
 							</label>
 						</div>
 
@@ -587,6 +598,69 @@
 					<span class="pocsag-baud" v-if="entry.baud">{{ entry.baud }}Bd</span>
 					<span class="pocsag-text" v-if="entry.text">{{ entry.text }}</span>
 					<span class="pocsag-text pocsag-tone" v-else>(tone only)</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- ISM Panel -->
+		<div class="pocsag-panel" v-if="ism.panelOpen">
+			<div class="pocsag-header">
+				<div class="pocsag-title">
+					<svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:middle;margin-right:4px"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 14 0h2a9 9 0 0 0-9-9zm0 4a5 5 0 0 0-5 5h2a3 3 0 1 1 6 0h2a5 5 0 0 0-5-5zm0 4a1 1 0 0 0-1 1v9h2v-9a1 1 0 0 0-1-1z"/></svg>
+					ISM Decoder
+					<span class="pocsag-count" v-if="ism.log.length">{{ ism.log.length }} evt{{ ism.log.length !== 1 ? 's' : '' }}</span>
+				</div>
+				<div class="pocsag-controls">
+					<button class="btn transcript-btn" @click="toggleIsmSummary" :title="ism.summaryOpen ? 'Hide stable detections summary' : 'Show stable detections summary'">
+						{{ ism.summaryOpen ? 'Summary: On' : 'Summary: Off' }}
+					</button>
+					<button class="btn transcript-btn" @click="toggleIsmFilterMode" :title="ism.filterMode === 'strict' ? 'Current mode: Strict. Click to switch to Sniffer.' : 'Current mode: Sniffer. Click to switch to Strict.'">
+						{{ ism.filterMode === 'strict' ? 'Mode: Strict' : 'Mode: Sniffer' }}
+					</button>
+					<button class="btn transcript-btn" @click="clearIsm" title="Clear log">Clear</button>
+					<button class="btn transcript-btn" @click="exportIsm" title="Export as text" :disabled="ism.log.length === 0">Export</button>
+				</div>
+			</div>
+			<div class="pocsag-body" ref="ismBody">
+				<div v-if="ism.summaryOpen && ismSummaries.length" class="ism-summary">
+					<div class="ism-summary-title">Stable detections</div>
+					<div class="ism-summary-grid">
+						<div v-for="item in ismSummaries" :key="item.key" class="ism-summary-card" :class="{ 'ism-summary-generic': item.isGeneric }">
+							<div class="ism-summary-topline">
+								<span class="ism-summary-protocol">{{ item.protocol }}</span>
+								<span class="ism-summary-kind">{{ item.isGeneric ? 'GENERIC' : 'KNOWN' }}</span>
+								<span class="ism-summary-count">{{ item.count }}x</span>
+							</div>
+							<div class="ism-summary-main">
+								<span class="ism-summary-model" v-if="item.model">{{ item.model }}</span>
+								<span class="ism-summary-id" v-if="item.id">ID:{{ item.id }}</span>
+							</div>
+							<div class="ism-summary-meta">
+								<span v-if="item.lastFreq">{{ item.lastFreq }}</span>
+								<span v-if="item.pairs">pairs:{{ item.pairs }}</span>
+								<span v-if="item.repeats">rep:{{ item.repeats }}</span>
+								<span>C:{{ (item.confidence * 100).toFixed(0) }}%</span>
+							</div>
+							<div class="ism-summary-text" v-if="item.lastText">{{ item.lastText }}</div>
+						</div>
+					</div>
+				</div>
+				<div v-if="ism.log.length === 0" class="pocsag-empty">
+					No events yet. Enable "Decode ISM" on an NFM VFO and tune to 433.92 MHz or 868 MHz ISM activity.
+				</div>
+				<div v-for="(entry, i) in ism.log" :key="'ism-' + i" class="pocsag-entry"
+					:style="entry.vfoIndex != null ? { borderLeftColor: vfoColor(entry.vfoIndex) } : {}">
+					<span class="pocsag-vfo-dot" v-if="entry.vfoIndex != null" :style="{ background: vfoColor(entry.vfoIndex) }" :title="'VFO ' + (entry.vfoIndex + 1)"></span>
+					<span class="pocsag-time">{{ entry.time }}</span>
+					<span class="pocsag-freq" :style="entry.vfoIndex != null ? { color: vfoColor(entry.vfoIndex) } : {}">{{ entry.freq }}</span>
+					<span class="pocsag-type">{{ entry.protocol }}</span>
+					<span class="pocsag-baud">{{ entry.type.toUpperCase() }}</span>
+					<span class="pocsag-capcode" v-if="entry.model">MODEL:{{ entry.model }}</span>
+					<span class="pocsag-capcode" v-if="entry.id">ID:{{ entry.id }}</span>
+					<span class="pocsag-baud" v-if="entry.hits && entry.hits > 1">x{{ entry.hits }}</span>
+					<span class="pocsag-text" v-if="entry.raw">{{ entry.raw }}</span>
+					<span class="pocsag-text" v-if="entry.text">{{ entry.text }}</span>
+					<span class="pocsag-baud" v-if="entry.confidence > 0">C:{{ (entry.confidence * 100).toFixed(0) }}%</span>
 				</div>
 			</div>
 		</div>

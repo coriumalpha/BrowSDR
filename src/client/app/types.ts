@@ -15,6 +15,7 @@ export interface Vfo {
 	rdsRegion: string;
 	volume: number;
 	pocsag: boolean;
+	ism: boolean;
 	displayFreq: string;
 	focused: boolean;
 }
@@ -57,6 +58,29 @@ export interface WhisperState {
 export interface PocsagState {
 	panelOpen: boolean;
 	log: Array<{ time: string; freq: string; vfoIndex: number; capcode: string; type: string; text: string; baud: number }>;
+}
+
+export interface IsmState {
+	panelOpen: boolean;
+	filterMode: 'strict' | 'sniffer';
+	log: Array<{
+		time: string;
+		freq: string;
+		vfoIndex: number;
+		type: 'status' | 'burst';
+		protocol: string;
+		model: string;
+		id: string;
+		raw: string;
+		text: string;
+		confidence: number;
+		repeats?: number;
+		pairs?: number;
+		unknownRatio?: number;
+		hits?: number;
+		_ts?: number;
+		_key?: string;
+	}>;
 }
 
 export interface ViewState {
@@ -131,6 +155,7 @@ export interface Bookmark {
 	rds?: boolean;
 	rdsRegion?: string;
 	volume?: number;
+	ism?: boolean;
 	// group fields
 	centerFreq?: number;
 	sampleRate?: number;

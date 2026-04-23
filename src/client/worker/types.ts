@@ -30,12 +30,15 @@ export interface VfoParams {
 	bandwidth: number;
 	volume: number;
 	pocsag: boolean;
+	ism: boolean;
 }
 
 export interface VfoState {
 	squelchOpen: boolean;
 	squelchDb: number;
 	pocsagDecoder: any;
+	ismDecoder: any;
+	ismArmedStatusSent?: boolean;
 	audioQueue: Float32Array;
 	audioQueueLen: number;
 	lastMode?: string;
@@ -96,6 +99,7 @@ export interface RemoteClientState {
 	audioQueues: { queue: Float32Array; len: number }[];
 	mixBuf: Float32Array | null;
 	pocsagDecoders: any[];
+	ismDecoders: any[];
 	squelchOpen: boolean[];
 }
 
@@ -105,6 +109,19 @@ export interface POCSAGMessage {
 	type: 'alpha' | 'tone' | 'numeric';
 	text: string;
 	baud: number;
+}
+
+export interface ISMMessage {
+	type: 'status' | 'burst';
+	protocol: string;
+	model?: string;
+	id?: string;
+	raw?: string;
+	text?: string;
+	confidence?: number;
+	repeats?: number;
+	pairs?: number;
+	unknownRatio?: number;
 }
 
 export interface DeviceOpenOpts {
