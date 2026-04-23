@@ -21,8 +21,8 @@ const IF_RATES: Record<string, number> = {
     raw: 48000,
 };
 const AUDIO_RATE = 48000;
-const ISM_SCAN_IF_RATE = 1024000;
-const ISM_SCAN_BANDWIDTH_HZ = 1600000;
+const ISM_SCAN_IF_RATE = 384000;
+const ISM_SCAN_BANDWIDTH_HZ = 600000;
 
 interface ProcessOutput {
     audio: Float32Array | null;
@@ -70,6 +70,8 @@ self.onmessage = async (e: MessageEvent) => {
             carrierAgcGain: 1.0,
             deemphPrev: 0,
             agcGain: 1.0,
+            ismDcAvg: 0,
+            ismAgcGain: 0.25,
             ssbPhase: 0.0,
             audioResampler: null as RationalResampler | null,
             currentIfRate: 0,
@@ -174,9 +176,9 @@ function configureDDC(params: any, systemCenterFreq: number): void {
             ismDdc = new DspProcessor(systemSampleRate, 0.0, ISM_SCAN_BANDWIDTH_HZ);
         }
         const ismIfRate = Math.min(systemSampleRate, ISM_SCAN_IF_RATE);
-        const ismBandwidth = Math.min(ISM_SCAN_BANDWIDTH_HZ, Math.max(300000, Math.floor(systemSampleRate * 0.88)));
+        const ismBandwidth = Math.min(ISM_SCAN_BANDWIDTH_HZ, Math.max(220000, Math.floor(ismIfRate * 0.92)));
         ismDdc.set_if_sample_rate(ismIfRate);
-        ismDdc.set_shift(systemSampleRate, 0);
+        ismDdc.set_shift(systemSampleRate, offsetFreq);
         ismDdc.set_bandwidth(ismBandwidth);
         ismDdc.set_squelch(-140, false);
         ismDdc.set_wfm_mode(false);
@@ -204,8 +206,8 @@ function processIsmWideEnvelope(chunkLenBytes: number): { ism: Float32Array | nu
     const agcAttack = Math.min(0.12, 320.0 / ifRate);
     const agcDecay = Math.min(0.012, 18.0 / ifRate);
 
-    let dc = vfoState.dcAvg || 0;
-    let agc = Math.max(vfoState.agcGain || 0.02, 1e-6);
+    let dc = vfoState.ismDcAvg || 0;
+    let agc = Math.max(vfoState.ismAgcGain || 0.08, 1e-6);
 
     for (let i = 0; i < numIqSamples; i++) {
         const dI = iq[i * 2];
@@ -221,8 +223,8 @@ function processIsmWideEnvelope(chunkLenBytes: number): { ism: Float32Array | nu
         env[i] = n;
     }
 
-    vfoState.dcAvg = dc;
-    vfoState.agcGain = agc;
+    vfoState.ismDcAvg = dc;
+    vfoState.ismAgcGain = agc;
     return { ism: env, ismSampleRate: ifRate };
 }
 

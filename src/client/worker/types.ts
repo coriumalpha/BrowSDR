@@ -46,6 +46,8 @@ export interface VfoState {
 	deemphPrev?: number;
 	dcAvg?: number;
 	agcGain?: number;
+	ismDcAvg?: number;
+	ismAgcGain?: number;
 	ssbPhase?: number;
 	cwTone?: number;
 	currentIfRate?: number;
