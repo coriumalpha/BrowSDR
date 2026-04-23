@@ -7,6 +7,14 @@ export const ismMethods = {
 	toggleIsmSummary(this: AppInstance) {
 		this.ism.summaryOpen = !this.ism.summaryOpen;
 	},
+	cycleIsmHeight(this: AppInstance) {
+		this.ism.heightMode =
+			this.ism.heightMode === '1x'
+				? '2x'
+				: this.ism.heightMode === '2x'
+					? '3x'
+					: '1x';
+	},
 	toggleIsmFilterMode(this: AppInstance) {
 		this.ism.filterMode = this.ism.filterMode === 'strict' ? 'sniffer' : 'strict';
 	},

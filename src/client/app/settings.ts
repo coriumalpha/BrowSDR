@@ -11,6 +11,7 @@ export const settingsMethods = {
 			vfos: this.vfos,
 			ismFilterMode: this.ism?.filterMode || 'sniffer',
 			ismSummaryOpen: !!this.ism?.summaryOpen,
+			ismHeightMode: this.ism?.heightMode || '1x',
 			view: this.view,
 			collapsedPanels: this.collapsedPanels,
 			recentRemoteIds: this.recentRemoteIds,
@@ -52,6 +53,11 @@ export const settingsMethods = {
 					this.ism.filterMode = 'sniffer';
 				}
 				this.ism.summaryOpen = !!setting.ismSummaryOpen;
+				if (setting.ismHeightMode === '2x' || setting.ismHeightMode === '3x' || setting.ismHeightMode === '1x') {
+					this.ism.heightMode = setting.ismHeightMode;
+				} else {
+					this.ism.heightMode = '1x';
+				}
 				if (setting.view) Object.assign(this.view, setting.view);
 				if (setting.collapsedPanels && typeof setting.collapsedPanels === 'object') Object.assign(this.collapsedPanels, setting.collapsedPanels);
 				if (setting.recentRemoteIds && Array.isArray(setting.recentRemoteIds)) this.recentRemoteIds = setting.recentRemoteIds;

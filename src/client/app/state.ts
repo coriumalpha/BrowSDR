@@ -80,6 +80,7 @@ export function createAppData() {
 			panelOpen: false,
 			filterMode: 'sniffer' as 'strict' | 'sniffer',
 			summaryOpen: false,
+			heightMode: '1x' as '1x' | '2x' | '3x',
 			seen: {} as Record<string, { count: number; lastTs: number; confidence: number; pairs: number }>,
 			log: [] as Array<{ time: string; freq: string; vfoIndex: number; type: 'status' | 'burst'; protocol: string; model: string; id: string; raw: string; text: string; confidence: number; repeats?: number; pairs?: number; unknownRatio?: number; hits?: number; _ts?: number; _key?: string }>,
 		},

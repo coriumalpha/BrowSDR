@@ -603,7 +603,13 @@
 		</div>
 
 		<!-- ISM Panel -->
-		<div class="pocsag-panel" v-if="ism.panelOpen">
+		<div
+			class="pocsag-panel ism-panel"
+			:class="{
+				'ism-panel--2x': ism.heightMode === '2x',
+				'ism-panel--3x': ism.heightMode === '3x'
+			}"
+			v-if="ism.panelOpen">
 			<div class="pocsag-header">
 				<div class="pocsag-title">
 					<svg viewBox="0 0 24 24" width="16" height="16" style="vertical-align:middle;margin-right:4px"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 14 0h2a9 9 0 0 0-9-9zm0 4a5 5 0 0 0-5 5h2a3 3 0 1 1 6 0h2a5 5 0 0 0-5-5zm0 4a1 1 0 0 0-1 1v9h2v-9a1 1 0 0 0-1-1z"/></svg>
@@ -613,6 +619,9 @@
 				<div class="pocsag-controls">
 					<button class="btn transcript-btn" @click="toggleIsmSummary" :title="ism.summaryOpen ? 'Hide stable detections summary' : 'Show stable detections summary'">
 						{{ ism.summaryOpen ? 'Summary: On' : 'Summary: Off' }}
+					</button>
+					<button class="btn transcript-btn" @click="cycleIsmHeight" title="Cycle ISM panel height">
+						{{ 'Height: ' + ism.heightMode }}
 					</button>
 					<button class="btn transcript-btn" @click="toggleIsmFilterMode" :title="ism.filterMode === 'strict' ? 'Current mode: Strict. Click to switch to Sniffer.' : 'Current mode: Sniffer. Click to switch to Strict.'">
 						{{ ism.filterMode === 'strict' ? 'Mode: Strict' : 'Mode: Sniffer' }}

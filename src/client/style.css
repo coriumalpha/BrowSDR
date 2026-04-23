@@ -1068,6 +1068,31 @@ canvas {
 	overflow: hidden;
 }
 
+.ism-panel {
+	position: relative;
+}
+
+.ism-panel::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 72px;
+	height: 4px;
+	border-radius: 999px;
+	background: rgba(255, 183, 77, 0.45);
+	pointer-events: none;
+}
+
+.ism-panel--2x {
+	height: 360px;
+}
+
+.ism-panel--3x {
+	height: 520px;
+}
+
 .pocsag-header {
 	display: flex;
 	align-items: center;

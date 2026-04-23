@@ -248,6 +248,25 @@ export class ISMDecoder {
 				return;
 			}
 
+			// Reject pathological "stuck" bursts that are typically broadband noise,
+			// local digital hash, or forced-close garbage rather than real framed OOK.
+			// The telltale signs are:
+			// - burst duration pinned near the hard timeout,
+			// - hundreds/thousands of runs,
+			// - almost no valid symbol pairs extracted,
+			// - ultra-short timings around the slicer floor.
+			const timeoutPinned = burstMs >= this.maxBurstMs * 0.95;
+			const pathologicalRaw =
+				timeoutPinned &&
+				this._runs.length >= 400 &&
+				parsed.totalPairs <= 4 &&
+				shortUs <= 120 &&
+				longUs <= 220;
+			if (pathologicalRaw) {
+				this._resetBurst();
+				return;
+			}
+
 			// Hard reject pathological junk; for the remaining generic bursts,
 			// require either repeat evidence or a convincingly clean frame.
 			if (parsed.totalPairs < 1 || unknownRatio > 0.995) {

@@ -63,6 +63,7 @@ export interface PocsagState {
 export interface IsmState {
 	panelOpen: boolean;
 	filterMode: 'strict' | 'sniffer';
+	heightMode: '1x' | '2x' | '3x';
 	seen: Record<string, {
 		count: number;
 		lastTs: number;
