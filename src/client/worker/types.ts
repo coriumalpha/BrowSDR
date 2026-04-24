@@ -147,5 +147,5 @@ export const IF_RATES: Record<string, number> = {
 };
 
 export const AUDIO_RATE = 48000;
-export const ISM_SCAN_IF_RATE = 1024000;
-export const ISM_SCAN_BANDWIDTH_HZ = 1600000;
+export const ISM_SCAN_IF_RATE = 384000;
+export const ISM_SCAN_BANDWIDTH_HZ = 600000;

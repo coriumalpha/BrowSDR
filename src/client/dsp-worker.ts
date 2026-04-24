@@ -1,5 +1,6 @@
 import init, { DspProcessor, set_panic_hook, alloc_iq_buffer, free_iq_buffer } from "/hackrf-web/pkg/hackrf_web.js";
 import { RationalResampler } from './worker/dsp-pipeline';
+import { ISM_SCAN_BANDWIDTH_HZ, ISM_SCAN_IF_RATE } from './worker/types';
 
 // --- Worker State ---
 let wasmInitPromise: Promise<void> | null = null;
@@ -21,8 +22,6 @@ const IF_RATES: Record<string, number> = {
     raw: 48000,
 };
 const AUDIO_RATE = 48000;
-const ISM_SCAN_IF_RATE = 384000;
-const ISM_SCAN_BANDWIDTH_HZ = 600000;
 
 interface ProcessOutput {
     audio: Float32Array | null;

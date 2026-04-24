@@ -1,6 +1,7 @@
 import type { ISMMessage } from './types';
 import { BitBuffer } from './rtl433-bitbuffer';
 import { PulseData } from './rtl433-pulse-data';
+import { analyzePulsePairs, type PulseProfile } from './rtl433-pulse-analyzer';
 
 interface RunUs {
 	level: 0 | 1;
@@ -49,6 +50,11 @@ interface DecodedProtocol {
 	repeats?: number;
 	pairs?: number;
 	unknownRatio?: number;
+}
+
+interface GenericHint {
+	protocol: 'OOK-PWM' | 'OOK-PULSE' | 'OOK-RAW';
+	confidenceBoost: number;
 }
 
 /**
@@ -211,6 +217,8 @@ export class ISMDecoder {
 		const stats = this._pulseStats(runsUs.map((r) => r.us));
 		const shortUs = stats ? stats.shortUs : this._fallbackShortUs(runsUs);
 		const longUs = stats ? stats.longUs : shortUs * 3.0;
+		const pulseData = PulseData.fromRuns(runsUs);
+		const profile = pulseData ? analyzePulsePairs(pulseData.pairs) : null;
 
 		const parsed = this._extractSymbols(runsUs, shortUs);
 		const signature = this._signature(parsed.symbols);
@@ -226,7 +234,7 @@ export class ISMDecoder {
 		this._lastSig = signature;
 		this._lastSigAtMs = nowMs;
 
-		const known = this._decodeKnownProtocols(parsed, shortUs, longUs, runsUs);
+		const known = this._decodeKnownProtocols(parsed, shortUs, longUs, runsUs, pulseData, profile);
 		if (known) {
 			this.onMessage({
 				type: 'burst',
@@ -267,11 +275,12 @@ export class ISMDecoder {
 			// - ultra-short timings around the slicer floor.
 			const timeoutPinned = burstMs >= this.maxBurstMs * 0.95;
 			const pathologicalRaw =
-				timeoutPinned &&
+				(timeoutPinned &&
 				this._runs.length >= 400 &&
 				parsed.totalPairs <= 4 &&
 				shortUs <= 120 &&
-				longUs <= 220;
+				longUs <= 220) ||
+				!!profile?.pathologicalLikely;
 			if (pathologicalRaw) {
 				this._resetBurst();
 				return;
@@ -298,14 +307,15 @@ export class ISMDecoder {
 				repeats = prev.count;
 			}
 
+			const hint = this._genericHint(profile, parsed, shortUs, longUs);
 			const strongGeneric =
 				burstMs >= 10 &&
 				burstMs <= Math.min(this.maxBurstMs, 220) &&
 				shortUs >= 120 &&
 				this._runs.length >= 16 &&
 				(
-					(parsed.totalPairs >= 6 && unknownRatio <= 0.35 && baseConf >= 0.54) ||
-					(parsed.totalPairs >= 3 && unknownRatio <= 0.55 && baseConf >= 0.48 && ratio >= 1.4 && ratio <= 7.5)
+					(parsed.totalPairs >= 6 && unknownRatio <= 0.35 && baseConf + hint.confidenceBoost >= 0.54) ||
+					(parsed.totalPairs >= 3 && unknownRatio <= 0.55 && baseConf + hint.confidenceBoost >= 0.48 && ratio >= 1.4 && ratio <= 7.5)
 				);
 
 			// Keep one-shot generic bursts only when they are unusually clean.
@@ -318,12 +328,12 @@ export class ISMDecoder {
 
 			this.onMessage({
 				type: 'burst',
-				protocol: ratio > 2.0 && ratio < 4.6 ? 'OOK-PWM' : (parsed.totalPairs >= 4 ? 'OOK-PULSE' : 'OOK-RAW'),
+				protocol: hint.protocol,
 				model: '',
 				id,
 				raw,
 				text: `${pairHint}rep=${repeats} runs=${this._runs.length} short=${shortUs.toFixed(0)}us long=${longUs.toFixed(0)}us burst=${burstMs.toFixed(1)}ms`,
-				confidence: Math.max(0.10, Math.min(0.95, baseConf + 0.05 * Math.min(4, repeats - 1))),
+				confidence: Math.max(0.10, Math.min(0.95, baseConf + hint.confidenceBoost + 0.05 * Math.min(4, repeats - 1))),
 				repeats,
 				pairs: parsed.totalPairs,
 				unknownRatio,
@@ -411,7 +421,14 @@ export class ISMDecoder {
 		return { symbols: out, unknown, totalPairs: pairs };
 	}
 
-	private _decodeKnownProtocols(parsed: SymbolParse, shortUs: number, longUs: number, runsUs: RunUs[]): DecodedProtocol | null {
+	private _decodeKnownProtocols(
+		parsed: SymbolParse,
+		shortUs: number,
+		longUs: number,
+		runsUs: RunUs[],
+		pulseData: PulseData | null,
+		profile: PulseProfile | null
+	): DecodedProtocol | null {
 		const frames = parsed.symbols
 			.split('|')
 			.map((f) => f.replace(/X+/g, ''))
@@ -503,7 +520,7 @@ export class ISMDecoder {
 			};
 		}
 
-		const fixedGap = this._decodeFixedGapPwm(runsUs, shortUs, longUs);
+		const fixedGap = this._decodeFixedGapPwm(runsUs, shortUs, longUs, pulseData, profile);
 		if (fixedGap) {
 			const waveman = this._decodeWaveman(fixedGap.row, fixedGap.repeats, parsed);
 			if (waveman) return waveman;
@@ -530,10 +547,14 @@ export class ISMDecoder {
 			};
 		}
 
-		const ppm = this._decodePpm(runsUs, shortUs, longUs);
+		const ppm = this._decodePpm(runsUs, shortUs, longUs, pulseData, profile);
 		if (ppm) {
 			const x10 = this._decodeX10Rf(ppm.row, ppm.repeats, parsed);
 			if (x10) return x10;
+			const x10sec = this._decodeX10Security(ppm.row, ppm.repeats, parsed);
+			if (x10sec) return x10sec;
+			const ws = this._decodeWssensor(ppm.row, ppm.repeats, parsed);
+			if (ws) return ws;
 
 			const rowHex = parseInt(ppm.row, 2).toString(16).toUpperCase().padStart(Math.ceil(ppm.row.length / 4), '0');
 			const confidence = this._protocolConfidence(parsed, ppm.repeats, ppm.shortGapUs, ppm.longGapUs, ppm.row.length, 0.84);
@@ -550,7 +571,7 @@ export class ISMDecoder {
 			};
 		}
 
-		const manchester = this._decodeManchester(runsUs);
+		const manchester = this._decodeManchester(runsUs, profile);
 		if (manchester) {
 			const rowHex = parseInt(manchester.row, 2).toString(16).toUpperCase().padStart(Math.ceil(manchester.row.length / 4), '0');
 			const confidence = Math.max(
@@ -756,6 +777,107 @@ export class ISMDecoder {
 		};
 	}
 
+	private _decodeX10Security(row: string, repeats: number, parsed: SymbolParse): DecodedProtocol | null {
+		if (row.length !== 41) return null;
+		const bits = BitBuffer.fromBitRows([row]);
+		const b = bits.extractBytes(0, 0, 41);
+		if (b.length < 6) return null;
+
+		if (((b[0] ^ b[1]) & 0x0f) !== 0x0f || ((b[2] ^ b[3]) & 0xff) !== 0xff) return null;
+
+		let parity = b[0] ^ b[1] ^ b[2] ^ b[3] ^ b[4] ^ (b[5] & 0x80);
+		parity = ((parity >> 4) ^ (parity & 0x0f)) & 0x0f;
+		parity = ((parity >> 2) ^ (parity & 0x03)) & 0x03;
+		parity = ((parity >> 1) ^ (parity & 0x01)) & 0x01;
+		if (parity !== 0) return null;
+
+		const code = b[2] & 0xfe;
+		let event = 'UNKNOWN';
+		let delay = 0;
+		let tamper = 0;
+		switch (code) {
+			case 0x00:
+			case 0x04:
+			case 0x40:
+			case 0x44:
+				event = 'DOOR/WINDOW OPEN';
+				delay = (b[2] & 0x04) ? 0 : 1;
+				tamper = (b[2] & 0x40) ? 1 : 0;
+				break;
+			case 0x80:
+			case 0x84:
+			case 0xc0:
+			case 0xc4:
+				event = 'DOOR/WINDOW CLOSED';
+				delay = (b[2] & 0x04) ? 0 : 1;
+				tamper = (b[2] & 0x40) ? 1 : 0;
+				break;
+			case 0x06: event = 'KEY-FOB ARM'; break;
+			case 0x0c:
+			case 0x4c:
+				event = 'MOTION TRIPPED';
+				tamper = (b[2] & 0x40) ? 1 : 0;
+				break;
+			case 0x26: event = 'KR18 PANIC'; break;
+			case 0x42: event = 'KEY-FOB LIGHTS A ON'; break;
+			case 0x46: event = 'KEY-FOB LIGHTS B ON'; break;
+			case 0x82: event = 'SH624 SEC-REMOTE DISARM'; break;
+			case 0x86: event = 'KEY-FOB DISARM'; break;
+			case 0x88: event = 'KR15 PANIC'; break;
+			case 0x8c:
+			case 0xcc:
+				event = 'MOTION READY';
+				tamper = (b[2] & 0x40) ? 1 : 0;
+				break;
+			case 0x98: event = 'KR15 PANIC-3SECOND'; break;
+			case 0xc2: event = 'KEY-FOB LIGHTS A OFF'; break;
+			case 0xc6: event = 'KEY-FOB LIGHTS B OFF'; break;
+		}
+
+		const batteryLow = b[2] & 0x01;
+		const id = `${b[0].toString(16).toUpperCase().padStart(2, '0')}${b[4].toString(16).toUpperCase().padStart(2, '0')}`;
+		const codeHex = b[2].toString(16).toUpperCase().padStart(2, '0');
+		return {
+			protocol: 'X10-SECURITY',
+			model: 'X10-Security',
+			id,
+			raw: row,
+			text: `id=${id} code=${codeHex} event=${event} battery_ok=${batteryLow ? 0 : 1} tamper=${tamper} delay=${delay} repeats=${repeats}`,
+			confidence: 0.95,
+			repeats,
+			pairs: parsed.totalPairs,
+			unknownRatio: parsed.unknown / Math.max(parsed.totalPairs, 1),
+		};
+	}
+
+	private _decodeWssensor(row: string, repeats: number, parsed: SymbolParse): DecodedProtocol | null {
+		if (row.length !== 24 || repeats < 3) return null;
+		const bits = BitBuffer.fromBitRows([row]);
+		const b = bits.extractBytes(0, 0, 24);
+		if (b.length < 3) return null;
+		if ((!b[0] && !b[1] && !b[2]) || (b[0] === 0xff && b[1] === 0xff && b[2] === 0xff)) return null;
+
+		const rawTemp = ((b[0] << 8) | (b[1] & 0xf0)) & 0xffff;
+		const signedTemp = (rawTemp << 16) >> 16;
+		const temperatureC = (signedTemp >> 4) * 0.1;
+		const batteryOk = (b[1] & 0x08) ? 1 : 0;
+		const startup = (b[1] & 0x04) ? 1 : 0;
+		const channel = (b[1] & 0x03) + 1;
+		const sensorId = b[2];
+
+		return {
+			protocol: 'HYUNDAI-WS',
+			model: 'Hyundai-WS',
+			id: sensorId.toString(16).toUpperCase().padStart(2, '0'),
+			raw: row,
+			text: `id=${sensorId} channel=${channel} battery_ok=${batteryOk} startup=${startup} temp=${temperatureC.toFixed(1)}C repeats=${repeats}`,
+			confidence: 0.90,
+			repeats,
+			pairs: parsed.totalPairs,
+			unknownRatio: parsed.unknown / Math.max(parsed.totalPairs, 1),
+		};
+	}
+
 	private _findRepeatedBinaryWindow(bits: string, width: number, minRepeats: number): { frame: string; repeats: number } | null {
 		if (bits.length < width * minRepeats) return null;
 		const counts = new Map<string, number>();
@@ -810,10 +932,41 @@ export class ISMDecoder {
 		};
 	}
 
-	private _decodeFixedGapPwm(runsUs: RunUs[], fallbackShortUs: number, fallbackLongUs: number): FixedGapDecode | null {
+	private _genericHint(profile: PulseProfile | null, parsed: SymbolParse, shortUs: number, longUs: number): GenericHint {
+		if (!profile) {
+			return {
+				protocol: longUs / Math.max(shortUs, 1) > 2.0 && longUs / Math.max(shortUs, 1) < 4.6 ? 'OOK-PWM' : (parsed.totalPairs >= 4 ? 'OOK-PULSE' : 'OOK-RAW'),
+				confidenceBoost: 0,
+			};
+		}
+		if (profile.pathologicalLikely) {
+			return { protocol: 'OOK-RAW', confidenceBoost: -0.18 };
+		}
+		if (profile.fixedGapLikely) {
+			return { protocol: 'OOK-PWM', confidenceBoost: 0.10 };
+		}
+		if (profile.ppmLikely) {
+			return { protocol: 'OOK-PULSE', confidenceBoost: 0.08 };
+		}
+		if (profile.manchesterLikely) {
+			return { protocol: 'OOK-PULSE', confidenceBoost: 0.04 };
+		}
+		return {
+			protocol: parsed.totalPairs >= 4 ? 'OOK-PULSE' : 'OOK-RAW',
+			confidenceBoost: 0,
+		};
+	}
+
+	private _decodeFixedGapPwm(
+		runsUs: RunUs[],
+		fallbackShortUs: number,
+		fallbackLongUs: number,
+		pulseData: PulseData | null,
+		profile: PulseProfile | null
+	): FixedGapDecode | null {
 		if (runsUs.length < 12) return null;
-		const pulseData = PulseData.fromRuns(runsUs);
 		if (!pulseData || pulseData.count < 8) return null;
+		if (profile && !profile.fixedGapLikely && profile.ppmLikely) return null;
 		const pulseRows = pulseData.buildFixedGapRows(fallbackLongUs);
 		if (!pulseRows) return null;
 
@@ -826,17 +979,23 @@ export class ISMDecoder {
 		return {
 			row: best.row,
 			repeats: best.repeats,
-			gapUs: pulseRows.separatorUs,
-			shortUs: pulseRows.shortUs,
-			longUs: pulseRows.longUs,
+			gapUs: profile?.shortGapUs || pulseRows.separatorUs,
+			shortUs: profile?.shortPulseUs || pulseRows.shortUs,
+			longUs: profile?.longPulseUs || pulseRows.longUs,
 			rows: best.rows,
 		};
 	}
 
-	private _decodePpm(runsUs: RunUs[], fallbackShortUs: number, fallbackLongUs: number): PpmDecode | null {
+	private _decodePpm(
+		runsUs: RunUs[],
+		fallbackShortUs: number,
+		fallbackLongUs: number,
+		pulseData: PulseData | null,
+		profile: PulseProfile | null
+	): PpmDecode | null {
 		if (runsUs.length < 12) return null;
-		const pulseData = PulseData.fromRuns(runsUs);
 		if (!pulseData || pulseData.count < 8) return null;
+		if (profile && !profile.ppmLikely && profile.fixedGapLikely) return null;
 		const pulseRows = pulseData.buildPpmRows();
 		if (!pulseRows) return null;
 
@@ -850,15 +1009,16 @@ export class ISMDecoder {
 		return {
 			row: best.row,
 			repeats: best.repeats,
-			pulseUs: pulseRows.separatorUs,
-			shortGapUs: pulseRows.shortUs,
-			longGapUs: pulseRows.longUs,
+			pulseUs: profile?.shortPulseUs || pulseRows.separatorUs,
+			shortGapUs: profile?.shortGapUs || pulseRows.shortUs,
+			longGapUs: profile?.longGapUs || pulseRows.longUs,
 			rows: best.rows,
 		};
 	}
 
-	private _decodeManchester(runsUs: RunUs[]): ManchesterDecode | null {
+	private _decodeManchester(runsUs: RunUs[], profile: PulseProfile | null): ManchesterDecode | null {
 		if (runsUs.length < 16) return null;
+		if (profile && !profile.manchesterLikely && (profile.fixedGapLikely || profile.ppmLikely)) return null;
 
 		const candidateRuns = runsUs
 			.map((r) => r.us)
