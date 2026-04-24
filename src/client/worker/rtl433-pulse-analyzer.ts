@@ -16,12 +16,19 @@ export interface PulseProfile {
 	pulseBins: PulseHistogram;
 	gapBins: PulseHistogram;
 	periodBins: PulseHistogram;
+	periodGpBins: PulseHistogram;
+	timingBins: PulseHistogram;
 	shortPulseUs: number;
 	longPulseUs: number;
 	shortGapUs: number;
 	longGapUs: number;
 	shortPeriodUs: number;
 	longPeriodUs: number;
+	modulationGuess: 'NONE' | 'PPM' | 'PWM' | 'MANCHESTER' | 'PCM';
+	gapLimitUs: number;
+	resetLimitUs: number;
+	syncWidthUs: number;
+	toleranceUs: number;
 	fixedGapLikely: boolean;
 	ppmLikely: boolean;
 	manchesterLikely: boolean;
@@ -96,11 +103,15 @@ export function analyzePulsePairs(pairs: PulsePair[]): PulseProfile | null {
 	const pulses = pairs.map((p) => p.high).filter((v) => v >= 20 && v <= 60000);
 	const gaps = pairs.map((p) => p.low).filter((v) => v >= 20 && v <= 60000);
 	const periods = pairs.map((p) => p.high + p.low).filter((v) => v >= 40 && v <= 90000);
+	const periodsGp = pairs.map((p, i) => (i === 0 ? p.high : p.high + pairs[i - 1].low)).filter((v) => v >= 40 && v <= 90000);
+	const timings = pulses.concat(gaps);
 	if (pulses.length < 4 || gaps.length < 4) return null;
 
 	const pulseBins = histogram(pulses);
 	const gapBins = histogram(gaps);
 	const periodBins = histogram(periods);
+	const periodGpBins = histogram(periodsGp);
+	const timingBins = histogram(timings);
 
 	const shortPulseUs = firstMean(pulseBins);
 	const longPulseUs = secondMean(pulseBins);
@@ -144,16 +155,78 @@ export function analyzePulsePairs(pairs: PulsePair[]): PulseProfile | null {
 		pulseBins.bins.length <= 3 &&
 		gapBins.bins.length <= 3;
 
+	let modulationGuess: PulseProfile['modulationGuess'] = 'NONE';
+	let gapLimitUs = 0;
+	let resetLimitUs = 0;
+	let syncWidthUs = 0;
+	let toleranceUs = 0;
+
+	if (pairs.length === 1) {
+		modulationGuess = 'NONE';
+	} else if (pulseBins.bins.length === 1 && gapBins.bins.length === 1) {
+		modulationGuess = 'NONE';
+	} else if (pulseBins.bins.length === 1 && gapBins.bins.length > 1) {
+		modulationGuess = 'PPM';
+		gapLimitUs = gapBins.bins[1]?.max || longGapUs;
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || longGapUs;
+	} else if (pulseBins.bins.length === 2 && gapBins.bins.length === 1) {
+		modulationGuess = 'PWM';
+		toleranceUs = Math.abs(longPulseUs - shortPulseUs) * 0.4;
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || shortGapUs;
+	} else if (pulseBins.bins.length === 2 && gapBins.bins.length === 2 && periodBins.bins.length === 1) {
+		modulationGuess = 'PWM';
+		toleranceUs = Math.abs(longPulseUs - shortPulseUs) * 0.4;
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || longGapUs;
+	} else if (pulseBins.bins.length === 2 && gapBins.bins.length === 2 && periodBins.bins.length === 3) {
+		modulationGuess = 'MANCHESTER';
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || longGapUs;
+	} else if (pulseBins.bins.length === 2 && gapBins.bins.length >= 3) {
+		modulationGuess = 'PWM';
+		gapLimitUs = gapBins.bins[1]?.max || longGapUs;
+		toleranceUs = Math.abs(longPulseUs - shortPulseUs) * 0.4;
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || longGapUs;
+	} else if (
+		pulseBins.bins.length >= 3 &&
+		gapBins.bins.length >= 3 &&
+		Math.abs((pulseBins.bins[1]?.mean || 0) - 2 * shortPulseUs) <= shortPulseUs / 8 &&
+		Math.abs((pulseBins.bins[2]?.mean || 0) - 3 * shortPulseUs) <= shortPulseUs / 8 &&
+		Math.abs(shortGapUs - shortPulseUs) <= shortPulseUs / 8 &&
+		Math.abs((gapBins.bins[1]?.mean || 0) - 2 * shortPulseUs) <= shortPulseUs / 8 &&
+		Math.abs((gapBins.bins[2]?.mean || 0) - 3 * shortPulseUs) <= shortPulseUs / 8
+	) {
+		modulationGuess = 'PCM';
+		resetLimitUs = shortPulseUs * 1024;
+	} else if (pulseBins.bins.length === 3) {
+		modulationGuess = 'PWM';
+		const countSorted = sortByCount(pulseBins.bins);
+		syncWidthUs = countSorted[0]?.mean || 0;
+		const p1 = countSorted[1]?.mean || shortPulseUs;
+		const p2 = countSorted[2]?.mean || longPulseUs;
+		toleranceUs = Math.abs(p2 - p1) * 0.4;
+		resetLimitUs = gapBins.bins[gapBins.bins.length - 1]?.max || longGapUs;
+	}
+
+	if (fixedGapLikely && modulationGuess === 'NONE') modulationGuess = 'PWM';
+	if (ppmLikely && modulationGuess === 'NONE') modulationGuess = 'PPM';
+	if (manchesterLikely && modulationGuess === 'NONE') modulationGuess = 'MANCHESTER';
+
 	return {
 		pulseBins,
 		gapBins,
 		periodBins,
+		periodGpBins,
+		timingBins,
 		shortPulseUs,
 		longPulseUs,
 		shortGapUs,
 		longGapUs,
 		shortPeriodUs,
 		longPeriodUs,
+		modulationGuess,
+		gapLimitUs,
+		resetLimitUs,
+		syncWidthUs,
+		toleranceUs,
 		fixedGapLikely,
 		ppmLikely,
 		manchesterLikely,

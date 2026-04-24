@@ -942,6 +942,15 @@ export class ISMDecoder {
 		if (profile.pathologicalLikely) {
 			return { protocol: 'OOK-RAW', confidenceBoost: -0.18 };
 		}
+		if (profile.modulationGuess === 'PWM') {
+			return { protocol: 'OOK-PWM', confidenceBoost: 0.12 };
+		}
+		if (profile.modulationGuess === 'PPM' || profile.modulationGuess === 'PCM') {
+			return { protocol: 'OOK-PULSE', confidenceBoost: 0.10 };
+		}
+		if (profile.modulationGuess === 'MANCHESTER') {
+			return { protocol: 'OOK-PULSE', confidenceBoost: 0.06 };
+		}
 		if (profile.fixedGapLikely) {
 			return { protocol: 'OOK-PWM', confidenceBoost: 0.10 };
 		}
@@ -966,6 +975,7 @@ export class ISMDecoder {
 	): FixedGapDecode | null {
 		if (runsUs.length < 12) return null;
 		if (!pulseData || pulseData.count < 8) return null;
+		if (profile && profile.modulationGuess === 'PPM') return null;
 		if (profile && !profile.fixedGapLikely && profile.ppmLikely) return null;
 		const pulseRows = pulseData.buildFixedGapRows(fallbackLongUs);
 		if (!pulseRows) return null;
@@ -995,6 +1005,7 @@ export class ISMDecoder {
 	): PpmDecode | null {
 		if (runsUs.length < 12) return null;
 		if (!pulseData || pulseData.count < 8) return null;
+		if (profile && profile.modulationGuess === 'PWM') return null;
 		if (profile && !profile.ppmLikely && profile.fixedGapLikely) return null;
 		const pulseRows = pulseData.buildPpmRows();
 		if (!pulseRows) return null;
@@ -1018,6 +1029,7 @@ export class ISMDecoder {
 
 	private _decodeManchester(runsUs: RunUs[], profile: PulseProfile | null): ManchesterDecode | null {
 		if (runsUs.length < 16) return null;
+		if (profile && profile.modulationGuess !== 'NONE' && profile.modulationGuess !== 'MANCHESTER') return null;
 		if (profile && !profile.manchesterLikely && (profile.fixedGapLikely || profile.ppmLikely)) return null;
 
 		const candidateRuns = runsUs
