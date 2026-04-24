@@ -127,6 +127,38 @@ export class BitBuffer {
 		}
 	}
 
+	nrzsDecode(): void {
+		for (let row = 0; row < this.rows.length; row++) {
+			if (!this.widths[row]) continue;
+			let prev = 0;
+			for (let col = 0; col < this.rows[row].length; col++) {
+				const current = this.rows[row][col] || 0;
+				const mask = ((prev << 7) | (current >> 1)) & 0xff;
+				prev = current;
+				this.rows[row][col] = (current ^ (~mask & 0xff)) & 0xff;
+			}
+			const lastBits = ((this.widths[row] - 1) & 7) + 1;
+			const lastCol = (this.widths[row] - 1) >> 3;
+			this.rows[row][lastCol] &= (0xff << (8 - lastBits)) & 0xff;
+		}
+	}
+
+	nrzmDecode(): void {
+		for (let row = 0; row < this.rows.length; row++) {
+			if (!this.widths[row]) continue;
+			let prev = 0;
+			for (let col = 0; col < this.rows[row].length; col++) {
+				const current = this.rows[row][col] || 0;
+				const mask = ((prev << 7) | (current >> 1)) & 0xff;
+				prev = current;
+				this.rows[row][col] = (current ^ mask) & 0xff;
+			}
+			const lastBits = ((this.widths[row] - 1) & 7) + 1;
+			const lastCol = (this.widths[row] - 1) >> 3;
+			this.rows[row][lastCol] &= (0xff << (8 - lastBits)) & 0xff;
+		}
+	}
+
 	search(row: number, start: number, pattern: string): number {
 		const patternBits = pattern.replace(/[^01]/g, '');
 		const len = this.widths[row];
@@ -163,6 +195,47 @@ export class BitBuffer {
 			if (bit1 === bit2) break;
 			out.addBit(bit2);
 		}
+		return out;
+	}
+
+	differentialManchesterDecode(row: number, start = 0, maxBits = 0): BitBuffer {
+		const out = new BitBuffer();
+		out.clear();
+		out.rows = [[]];
+		out.widths = [0];
+		out.syncs = [0];
+
+		let len = this.widths[row];
+		if (maxBits && len > start + maxBits * 2) len = start + maxBits * 2;
+		let ipos = start;
+		let bit2 = 0;
+
+		while (ipos + 2 < len) {
+			const bit1 = this.getBit(row, ipos++);
+			bit2 = this.getBit(row, ipos++);
+			const bit3 = this.getBit(row, ipos);
+			if (bit1 !== bit2) {
+				if (bit2 !== bit3) {
+					out.addBit(0);
+				} else {
+					bit2 = bit1;
+					ipos -= 1;
+					break;
+				}
+			} else {
+				bit2 = 1 - bit1;
+				ipos -= 2;
+				break;
+			}
+		}
+
+		while (ipos + 1 < len) {
+			const bit1 = this.getBit(row, ipos++);
+			if (bit1 === bit2) break;
+			bit2 = this.getBit(row, ipos++);
+			out.addBit(bit1 === bit2 ? 1 : 0);
+		}
+
 		return out;
 	}
 

@@ -3,6 +3,9 @@ interface RunUs {
 	us: number;
 }
 
+export const PD_MAX_PULSES = 1200;
+export const PD_MIN_PULSES = 16;
+
 export interface PulsePair {
 	high: number;
 	low: number;
@@ -16,7 +19,7 @@ export interface PulseRows {
 }
 
 export class PulseData {
-	constructor(readonly pairs: PulsePair[]) {}
+	constructor(readonly pairs: PulsePair[], readonly sampleRate = 1_000_000) {}
 
 	static fromRuns(runsUs: RunUs[]): PulseData | null {
 		if (runsUs.length < 4) return null;
@@ -37,6 +40,27 @@ export class PulseData {
 		return this.pairs.length;
 	}
 
+	clear(): PulseData {
+		return new PulseData([], this.sampleRate);
+	}
+
+	shift(): PulseData {
+		const offs = Math.floor(PD_MAX_PULSES / 2);
+		if (this.pairs.length <= offs) return new PulseData([], this.sampleRate);
+		return new PulseData(this.pairs.slice(offs), this.sampleRate);
+	}
+
+	toMicrosecondPairs(): Array<[number, number]> {
+		return this.pairs.map((p) => [p.high, p.low]);
+	}
+
+	toDebugString(max = 64): string {
+		return this.pairs
+			.slice(0, max)
+			.map((p) => `${Math.round(p.high)} ${Math.round(p.low)}`)
+			.join('\n');
+	}
+
 	highs(min = 0, max = Number.POSITIVE_INFINITY): number[] {
 		return this.pairs.map((p) => p.high).filter((v) => v >= min && v <= max);
 	}
@@ -50,6 +74,10 @@ export class PulseData {
 		const sorted = values.slice().sort((a, b) => a - b);
 		const idx = Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * q)));
 		return sorted[idx];
+	}
+
+	pulsePeriods(): number[] {
+		return this.pairs.map((p) => p.high + p.low);
 	}
 
 	buildFixedGapRows(fallbackLongUs: number): PulseRows | null {
