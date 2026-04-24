@@ -155,6 +155,7 @@ Where it was left:
    - more direct ports of specific upstream decoders into the current worker pipeline.
 
 For a more detailed summary of the attempt, current state, and next-step options, see [docs/rtl433-experiment.md](docs/rtl433-experiment.md).
+For a short closing note, see [docs/rtl433-experiment-status.md](docs/rtl433-experiment-status.md).
 
 ---
 
