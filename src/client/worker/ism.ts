@@ -1,5 +1,6 @@
 import type { ISMMessage } from './types';
 import { BitBuffer } from './rtl433-bitbuffer';
+import { PulseData } from './rtl433-pulse-data';
 
 interface RunUs {
 	level: 0 | 1;
@@ -811,54 +812,13 @@ export class ISMDecoder {
 
 	private _decodeFixedGapPwm(runsUs: RunUs[], fallbackShortUs: number, fallbackLongUs: number): FixedGapDecode | null {
 		if (runsUs.length < 12) return null;
-
-		let start = 0;
-		if (runsUs[0].level === 0 && runsUs.length > 1) start = 1;
-
-		const pairs: Array<{ high: number; low: number }> = [];
-		for (let i = start; i + 1 < runsUs.length; i += 2) {
-			const h = runsUs[i];
-			const l = runsUs[i + 1];
-			if (h.level !== 1 || l.level !== 0) break;
-			pairs.push({ high: h.us, low: l.us });
-		}
-		if (pairs.length < 8) return null;
-
-		const lows = pairs.map((p) => p.low).filter((v) => v >= 80 && v <= 12000);
-		if (lows.length < 6) return null;
-
-		const gapUs = this._percentile(lows, 0.5);
-		const lowP20 = this._percentile(lows, 0.2);
-		const lowP80 = this._percentile(lows, 0.8);
-		if (lowP20 <= 0 || (lowP80 / lowP20) > 1.9) return null;
-
-		const highs = pairs
-			.map((p) => p.high)
-			.filter((v) => v >= 120 && v <= Math.max(fallbackLongUs * 1.8, gapUs * 4.0));
-		if (highs.length < 6) return null;
-
-		const shortPulseUs = this._percentile(highs, 0.25);
-		const longPulseUs = this._percentile(highs, 0.75);
-		if (longPulseUs / Math.max(shortPulseUs, 1) < 1.6) return null;
-
-		const rows: string[] = [];
-		let current = '';
-		for (const pair of pairs) {
-			const isSeparator = pair.low > gapUs * 2.2 || pair.high > Math.max(longPulseUs * 1.8, fallbackLongUs * 2.2);
-			if (isSeparator) {
-				if (current.length >= 8) rows.push(current);
-				current = '';
-				continue;
-			}
-
-			const mid = (shortPulseUs + longPulseUs) * 0.5;
-			current += pair.high < mid ? '0' : '1';
-		}
-		if (current.length >= 8) rows.push(current);
-		if (!rows.length) return null;
+		const pulseData = PulseData.fromRuns(runsUs);
+		if (!pulseData || pulseData.count < 8) return null;
+		const pulseRows = pulseData.buildFixedGapRows(fallbackLongUs);
+		if (!pulseRows) return null;
 
 		const best = this._pickRepeatedRow(
-			rows.filter((row) => row.length >= 8 && row.length <= 32),
+			pulseRows.rows.filter((row) => row.length >= 8 && row.length <= 32),
 			2,
 			8
 		);
@@ -866,65 +826,22 @@ export class ISMDecoder {
 		return {
 			row: best.row,
 			repeats: best.repeats,
-			gapUs,
-			shortUs: shortPulseUs,
-			longUs: longPulseUs,
+			gapUs: pulseRows.separatorUs,
+			shortUs: pulseRows.shortUs,
+			longUs: pulseRows.longUs,
 			rows: best.rows,
 		};
 	}
 
 	private _decodePpm(runsUs: RunUs[], fallbackShortUs: number, fallbackLongUs: number): PpmDecode | null {
 		if (runsUs.length < 12) return null;
-
-		let start = 0;
-		if (runsUs[0].level === 0 && runsUs.length > 1) start = 1;
-
-		const pairs: Array<{ high: number; low: number }> = [];
-		for (let i = start; i + 1 < runsUs.length; i += 2) {
-			const h = runsUs[i];
-			const l = runsUs[i + 1];
-			if (h.level !== 1 || l.level !== 0) break;
-			pairs.push({ high: h.us, low: l.us });
-		}
-		if (pairs.length < 8) return null;
-
-		const highs = pairs.map((p) => p.high).filter((v) => v >= 80 && v <= 4000);
-		if (highs.length < 6) return null;
-		const pulseUs = this._percentile(highs, 0.5);
-		const highP20 = this._percentile(highs, 0.2);
-		const highP80 = this._percentile(highs, 0.8);
-		if (highP20 <= 0 || (highP80 / highP20) > 1.7) return null;
-
-		const lows = pairs.map((p) => p.low).filter((v) => v >= 120 && v <= 16000);
-		if (lows.length < 6) return null;
-		const shortGapUs = this._percentile(lows, 0.25);
-		const longGapUs = this._percentile(lows, 0.75);
-		if (longGapUs / Math.max(shortGapUs, 1) < 1.6) return null;
-
-		const rows: string[] = [];
-		let current = '';
-		for (const pair of pairs) {
-			const pulseOk = pair.high >= pulseUs * 0.45 && pair.high <= pulseUs * 1.75;
-			if (!pulseOk) {
-				if (current.length >= 8) rows.push(current);
-				current = '';
-				continue;
-			}
-
-			if (pair.low > longGapUs * 2.1) {
-				if (current.length >= 8) rows.push(current);
-				current = '';
-				continue;
-			}
-
-			const mid = (shortGapUs + longGapUs) * 0.5;
-			current += pair.low < mid ? '0' : '1';
-		}
-		if (current.length >= 8) rows.push(current);
-		if (!rows.length) return null;
+		const pulseData = PulseData.fromRuns(runsUs);
+		if (!pulseData || pulseData.count < 8) return null;
+		const pulseRows = pulseData.buildPpmRows();
+		if (!pulseRows) return null;
 
 		const best = this._pickRepeatedRow(
-			rows.filter((row) => row.length >= 8 && row.length <= 48),
+			pulseRows.rows.filter((row) => row.length >= 8 && row.length <= 48),
 			2,
 			8
 		);
@@ -933,9 +850,9 @@ export class ISMDecoder {
 		return {
 			row: best.row,
 			repeats: best.repeats,
-			pulseUs,
-			shortGapUs,
-			longGapUs,
+			pulseUs: pulseRows.separatorUs,
+			shortGapUs: pulseRows.shortUs,
+			longGapUs: pulseRows.longUs,
 			rows: best.rows,
 		};
 	}
