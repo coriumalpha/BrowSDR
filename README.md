@@ -126,6 +126,38 @@ cargo make build       # Build for web (output: hackrf-web/pkg/)
 
 ---
 
+## ISM / 433 Decoder Notes
+
+BrowSDR now includes an experimental browser-side ISM decoder path that was built to approximate the behavior of `rtl_433` as closely as possible inside the web app.
+
+The work covered:
+
+1. A dedicated wideband ISM capture path in the DSP worker, separate from the normal audio path.
+2. Browser-native ports of the key `rtl_433` primitives:
+   - `bitbuffer`
+   - `pulse_data`
+   - `pulse_analyzer`
+3. A growing set of decoders for common 433 MHz OOK/ASK families, including PWM, PPM, Manchester, EV1527-style, PT2262-style, X10, Waveman, Visonic Powercode, and a few related variants.
+4. UI affordances for the decoder panel, including summary mode, a taller panel layout, and the ability to inspect stable detections.
+
+What we learned:
+
+1. The browser-native approach can decode real traffic and works for some common 433 MHz patterns.
+2. Matching `rtl_433` feature-for-feature is much more than a small port. The upstream project has a large decoder ecosystem and a lot of accumulated heuristics.
+3. A direct worker/WASM integration with `rtl_433` would likely be the faster route to full parity, but we stopped short of that here.
+
+Where it was left:
+
+1. The experimental work lives on the `ism-decoder-rtl433-pass` branch history and has been merged into `main` for reference.
+2. The last meaningful state before stopping was a browser-side pulse analyzer and decoder stack that was useful but still incomplete for broad `rtl_433` coverage.
+3. The next sensible step, if someone wants to continue, is either:
+   - a WASM worker around `rtl_433`, or
+   - more direct ports of specific upstream decoders into the current worker pipeline.
+
+For a more detailed summary of the attempt, current state, and next-step options, see [docs/rtl433-experiment.md](docs/rtl433-experiment.md).
+
+---
+
 ## 🧪 Testing
 
 ```bash
